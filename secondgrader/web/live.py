@@ -124,11 +124,32 @@ def verdict_from_sidecar(trace_path: Any) -> tuple[GateDecision, list[ClaimVerdi
         return None
 
 
-def real_verdict(records: list[Record]) -> tuple[GateDecision, list[ClaimVerdict], VerifierResult | None, list[Claim]]:
-    """Audit + gate on the records. Raises NotImplementedError while the auditor is a stub."""
-    claims = auditor.extract_claims(records)
-    verdicts = auditor.check_claims(claims, records)
-    verdicts += auditor.detect_test_tampering(records)
+def task_for_records(records: list[Record]) -> dict[str, Any] | None:
+    """The parsed ``tasks/<id>.yaml`` named by the trace's prompt record, or None when there is none."""
+    for r in records:
+        if r.kind == "prompt":
+            task_id = str((r.payload or {}).get("task_id") or "").strip()
+            if not task_id or "/" in task_id or task_id.startswith("."):
+                return None
+            try:
+                return pipeline.load_task(task_id)
+            except (FileNotFoundError, OSError, ValueError):
+                return None
+    return None
+
+
+def real_verdict(records: list[Record], task: dict[str, Any] | None = None
+                 ) -> tuple[GateDecision, list[ClaimVerdict], VerifierResult | None, list[Claim]]:
+    """Audit + gate on the records, the same way the pipeline does it.
+
+    ``task`` (default: the task named in the prompt record) carries the rules
+    the auditor needs: protected paths and whether test edits are allowed.
+    Without it an honest, task-mandated test edit would read as tampering.
+    Raises NotImplementedError while the auditor is a stub.
+    """
+    if task is None:
+        task = task_for_records(records)
+    claims, verdicts, _probes = pipeline.audit_records(records, task)
     chain_ok, first_bad = check_hash_chain(records)
     vr = verifier_result_from_records(records)
     gt_ok, gt_seq = ground_truth_from_records(records)
@@ -170,5 +191,5 @@ def auto_verdict(records: list[Record]) -> tuple[GateDecision, list[ClaimVerdict
     return decision, verdicts, vr, claims
 
 
-__all__ = ["auto_verdict", "gate_verdict_from_records", "ground_truth_from_records", "real_verdict",
+__all__ = ["auto_verdict", "gate_verdict_from_records", "ground_truth_from_records", "real_verdict", "task_for_records",
            "verdict_from_sidecar", "verdicts_from_records", "verifier_result_from_records"]

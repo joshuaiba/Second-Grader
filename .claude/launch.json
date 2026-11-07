@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "verdict-page",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "uvicorn", "secondgrader.web.app:app", "--port", "8321", "--reload"],
+      "port": 8321
+    }
+  ]
+}
