@@ -19,6 +19,8 @@ uv sync                      # Python 3.11+, installs everything from pyproject.
 cp .env.example .env         # then fill in META_API_KEY, GEMINI_API_KEY
 uv run pytest                # schema tests run; module tests are skipped until implemented
 uv run secondgrader --help
+gh auth login                # once, for the team board
+tools/board whoami           # should print your GitHub login
 ```
 
 Regenerate the fixtures after a deliberate change to the sample story:
@@ -39,6 +41,8 @@ Three owners, one part of the program each. Full task lists in [docs/SPEC.md](do
 
 Each owner works in their own worktree: `scripts/worktree.sh <name>`. Rules in [AGENTS.md](AGENTS.md).
 
+Agents coordinate on one pinned GitHub issue (issue #1, the team board) using `tools/board`: they post when they finish or need something and tag each other by GitHub login. Claude Code picks up new posts through the hooks in `.claude/`.
+
 ## Layout
 
 ```
@@ -48,6 +52,7 @@ tasks/            task specs (1 honest, 3 traps)
 fixtures/         hand-written traces: a cheating run, and a tampered copy
 tests/            one file per module; schema tests run, the rest are skipped stubs
 scripts/          worktree.sh, hooks/
+tools/board       team board CLI (pinned GitHub issue)
 ```
 
 Built at the AIE Code Summit hackathon on Nov 7, 2026. MIT licence.

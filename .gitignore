@@ -11,3 +11,4 @@ build/
 dist/
 uv.lock
 .DS_Store
+.board/
