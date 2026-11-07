@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secondgrader"
+version = "0.1.0"
+description = "Verifies a coding agent's story against what actually happened."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.0",
+  "google-genai>=1.0",
+  "cryptography>=42",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "pyyaml>=6",
+  "pytest>=8",
+  "httpx>=0.27",
+]
+
+[project.scripts]
+secondgrader = "secondgrader.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["secondgrader*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
