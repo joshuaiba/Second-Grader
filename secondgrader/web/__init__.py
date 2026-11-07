@@ -273,8 +273,9 @@ def _chain_card(decision: GateDecision, n_records: int | None) -> str:
         detail = f"first bad record: {bad}"
     return (
         '<section class="card chain"><h2>Hash chain</h2>'
-        f'<div class="kv">{status} <span class="muted">{detail}</span> '
-        f'<span class="muted">first_bad_seq = {_e(decision.first_bad_seq)}</span></div>'
+        f'<div class="kv">{status} <span class="muted">{detail}</span>'
+        + (f' <span class="muted">first_bad_seq = {_e(decision.first_bad_seq)}</span>' if decision.first_bad_seq is not None else "")
+        + "</div>"
         "</section>"
     )
 
