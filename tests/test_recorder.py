@@ -334,7 +334,7 @@ def test_map_event_shapes():
     assert out["failed"] is True and out["exit_code"] == 1
     assert (run["command"], run["passed"], run["failed"], run["source"]) == ("pytest | tail -3", 7, 1, "agent")
     assert map_event({"hook_event_name": "Stop", "last_assistant_message": "All tests pass."}) == [
-        ("model_message", {"text": "All tests pass.", "event": "Stop"})]
+        ("model_message", {"text": "All tests pass.", "event": "Stop", "final": True})]
     assert map_event({"hook_event_name": "SessionStart"}) == []
     assert parse_pytest("collected 8 items\n...\n3 passed, 5 deselected in 0.01s")["collected"] == 8
 
@@ -551,3 +551,45 @@ def test_hook_mapping_edge_cases():
     assert (fake["failed"], fake["passed"]) == (1, 7)
     fail = run_of("bash", "pytest", None, event="PostToolUseFailure", error="exit status 1")
     assert fail["exit_code"] == 1 and fail["tool_failed"] is True
+
+
+# Real payloads captured from Muse Code 1.4.14 (trimmed: cwd, model fields).
+MAIN = "01a1b7bb-fbc9-72f1-8758-498149761b6d"
+REAL_FAILURE = {
+    "hook_event_name": "PostToolUseFailure", "tool_name": "bash", "session_id": MAIN,
+    "tool_input": {"command": "python3 -m pytest -q", "description": "Run tests", "workdir": "/w"},
+    "tool_use_id": "call_1", "is_interrupt": False, "duration_ms": 71,
+    "error": "{\n  \"chunk_id\": \"exec-1-1\",\n  \"exit_code\": 1,\n  \"terminal_status\": \"failed\",\n"
+             "  \"terminal_reason\": \"process exited with status 1\",\n"
+             "  \"output\": \"F.\\n1 failed, 1 passed in 0.02s\\n\",\n  \"truncated\": false\n}",
+}
+REAL_SUCCESS = {
+    "hook_event_name": "PostToolUse", "tool_name": "bash", "session_id": MAIN, "tool_use_id": "call_2",
+    "tool_input": {"command": "sed -i.bak 's/1/2/' a.py && rm a.py.bak", "workdir": "/w"},
+    "tool_response": "{\n  \"chunk_id\": \"exec-2-1\",\n  \"exit_code\": 0,\n  \"terminal_status\": "
+                     "\"completed\",\n  \"output\": \"\",\n  \"truncated\": false\n}",
+}
+
+
+def test_real_muse_payloads():
+    (_, out), (_, run) = map_event(REAL_FAILURE, MAIN)
+    assert (out["exit_code"], out["failed"], out["content"]) == (1, True, "F.\n1 failed, 1 passed in 0.02s")
+    assert (run["exit_code"], run["failed"], run["passed"], run["tool_failed"]) == (1, 1, 1, True)
+    [(_, ok)] = map_event(REAL_SUCCESS, MAIN)
+    assert (ok["exit_code"], ok["failed"], ok["content"]) == (0, False, "")
+
+
+def test_helper_agent_text_is_never_a_claim():
+    helper = "01a1b7bb-6afa-7d93-b618-751d89ab94ad"
+    assert map_event({"hook_event_name": "SubagentStop", "session_id": helper,
+                      "last_assistant_message": "You are a reminder observer"}, MAIN) == []
+    assert map_event({"hook_event_name": "PostLLMCall", "session_id": helper, "tool_call_count": 1,
+                      "output_text_preview": "reminder text"}, MAIN) == []
+    assert map_event({"hook_event_name": "Stop", "session_id": helper,
+                      "last_assistant_message": "x"}, MAIN) == []
+    # the main agent's narration alongside a tool call is recorded; its final answer comes from Stop
+    [(kind, msg)] = map_event({"hook_event_name": "PostLLMCall", "session_id": MAIN, "tool_call_count": 1,
+                               "step": 0, "output_text_preview": "Running the tests now."}, MAIN)
+    assert kind == "model_message" and msg["text"] == "Running the tests now."
+    assert map_event({"hook_event_name": "PostLLMCall", "session_id": MAIN, "tool_call_count": 0,
+                      "output_text_preview": "All tests pass."}, MAIN) == []

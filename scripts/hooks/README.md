@@ -22,34 +22,28 @@ muse exec  --hook-->  forward.py  --unix socket-->  recorder service  -->  trace
 - Measured hook overhead (scripted end-to-end test): p95 is under the 150 ms target, and the test
   enforces it.
 
-## P1.1 discovery note (Muse Code 1.4.x)
+## P1.1 discovery note (confirmed on Muse Code 1.4.14, Kevin's machine)
 
-Sources: dev.meta.ai/docs/muse-code (`/extending`, `/configuration`, `/permissions`, `/changelog`),
-docs.arcjet.com/coding-agents/muse-code. Items marked *(3rd party)* come from public issue
-threads, not Meta's docs. Items marked *(unverified)* need one real run to confirm.
+These are captured from real runs (`muse exec` with a hook that dumps every event's stdin).
+Anything not confirmed is marked.
 
 | Topic | What we know |
 |---|---|
-| Install | `brew install --cask muse-code` or Meta's install script. The binary is `muse`. **Not installed on Kevin's machine yet.** |
-| Headless | `muse exec "<prompt>" --json` writes JSONL events to stdout. `--model muse-spark-1.3`. Exit code 0 means the turn completed (it does not mean the work is correct). |
-| Flags | `--disable-sandbox` turns the sandbox off but keeps approvals on. A headless run probably also needs `--disable-approval` so it doesn't hang on a prompt *(unverified)*. Override with `$SG_MUSE_FLAGS`. |
-| Config | Project hooks go in `<repo>/.muse/hooks.json` and load only in a trusted workspace. Since 1.4.4, `--trust-workspace` may only gate skills and rules *(unverified)*. |
-| Format | `{"hooks": {"<Event>": [{"matcher": "...", "hooks": [{"type": "command", "command": "...", "timeout": 2}]}]}}` (timeout in seconds) |
-| Environment | Hooks run with a **cleared environment** plus an allowlist that includes `MUSE_SESSION_ID`. Because of that, the socket path goes on the command line. |
-| Events | SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, **PostToolUseFailure**, PostToolBatch, PreLLMCall, PostLLMCall, Pre/PostCompact, SubagentStart/Stop, Notification, Stop, StopFailure, SessionEnd |
-| Payload, common fields *(3rd party)* | `hook_event_name`, `session_id`, `turn_id`, `cwd`, `permission_mode`, `model`, `transcript_path` (null under `muse exec`) |
-| PreToolUse | `tool_name`, `tool_input`, `tool_use_id`. Example: `{"hook_event_name":"PreToolUse","tool_name":"edit_file","tool_input":{"find":"two","path":"probe-new.txt","replace":"three"}}` |
-| PostToolUse | Adds `tool_response`. For shell tools it is a **JSON string** holding `{exit_code, output}`, so it must be parsed twice *(3rd party)*. |
-| PostToolUseFailure | **A failing tool, including bash with a non-zero exit, fires this event and not PostToolUse.** Adds `error`, `duration_ms` and `is_interrupt`. We hook both, or we would miss failing test runs. |
-| Tool names | `bash`, `shell`, `exec_command`, `read_file`, `write_file`, `edit_file`, `search` *(3rd party)* |
-| Model text | SubagentStop has `last_assistant_message`. The Stop and PostLLMCall payloads are **undocumented**. As a fallback, the runner also reads assistant text from `--json` stdout (`source: "agent_stdout"`). |
-| Exit codes | Exit 2 denies the action on PreToolUse and UserPromptSubmit. On PostToolUse, exit 2 replaces the tool result the model sees, but the action has already happened. |
-| Default timeout | **Not documented.** We set 2 s explicitly. |
-| API key | `META_API_KEY` |
-
-Still unknown, to settle with the first real run: the default hook timeout and what happens on a
-timeout; the Stop payload; whether `bash` input uses `command` or `cmd` (we accept both); whether
-project hooks load under `--trust-workspace`; and where the session log lives.
+| Install | Installed at `~/.local/bin/muse` (1.4.14-R7309.1). |
+| Headless command | `muse exec --json --model muse-spark-1.3 --session-id <uuid> --reasoning-effort medium --max-model-steps 40 --trust-workspace --disable-sandbox --disable-approval --disable-request-user-input --disable-reminders --disable-web-tools "<prompt>"` |
+| Hooks load | `<repo>/.muse/hooks.json` **does** load with `--trust-workspace` (stderr shows `workspace trust: trusted source=run-flag`). |
+| Format | `{"hooks": {"<Event>": [{"hooks": [{"type": "command", "command": "...", "timeout": 2}]}]}}` |
+| Hook environment | `PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `PWD`, `MUSE_SESSION_ID`, `MUSE_THREAD_ID`, `TRACEPARENT`. Nothing else, so the socket path goes on the command line. |
+| Common fields | `hook_event_name`, `session_id`, `turn_id`, `cwd`, `transcript_path` (always null), `model`, `permission_mode`, `model_provider` |
+| UserPromptSubmit | `prompt` |
+| PreToolUse | `tool_name` (`bash`, `read_file`, `search`, ...), `tool_input` (bash: `command`, `description`, `workdir`), `tool_use_id` |
+| PostToolUse | Adds `tool_response`: for bash, a **JSON string** `{"chunk_id", "command", "exit_code", "terminal_status", "output", "truncated", ...}` |
+| PostToolUseFailure | **Fires instead of PostToolUse when a command exits non-zero.** It has no `tool_response`: the same JSON string (with `exit_code`, `output` and `terminal_reason`) is in **`error`**. Also has `is_interrupt` and `duration_ms`. |
+| Stop | `last_assistant_message`: the agent's **final answer, in full**. This is our main CLAIMED record. |
+| PostLLMCall | `output_text_preview` (may end in `...[truncated]`), `tool_call_count`, `step`, `usage`, `messages`. We record the preview only when the call also made tool calls (narration); the final answer comes from Stop. |
+| Helper agents | Muse Code runs internal "reminder" subagents (`SubagentStart`/`SubagentStop`, own `session_id`). Their text is system boilerplate, **never** an agent claim. The recorder takes the main session id from `SessionStart` and ignores helper text; `--disable-reminders` turns them off. |
+| Transcript | `muse export --session <uuid> --out file.json` writes Muse Code's own session log. The runner saves it as `muse_session.json` (for humans, not evidence). |
+| Not confirmed | Muse Code's default hook timeout (we set 2 s) and what happens on a timeout. Our hook gives up at 1.5 s and exits 2 either way. |
 
 ## Record conventions the recorder writes (for P2 and P3)
 
