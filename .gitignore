@@ -12,3 +12,4 @@ dist/
 uv.lock
 .DS_Store
 .board/
+.sg_cache/
