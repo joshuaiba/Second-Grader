@@ -346,7 +346,7 @@ def check_files_changed(claim: Claim, records: list[Record]) -> ClaimVerdict:
     actual: dict[str, list[int]] = {}
     for d in diffs:
         actual.setdefault(str(d.payload.get("path", "")), []).append(d.seq)
-    claimed = _claim_files(claim)
+    claimed = [_norm(c) for c in _claim_files(claim)]   # reasons show repo-relative paths
     text = claim.text.lower()
 
     def seqs(paths) -> list[int]:

@@ -349,3 +349,10 @@ def test_count_anywhere_in_sentence_is_a_count_claim():
 def test_not_all_tests_pass_is_a_failure_claim_not_a_pass_claim():
     v = verdict([diff("parser.py"), run("pytest -q", 1, 14, 1), say("x")], fail_claim("Not all tests pass yet."))
     assert v.status == "SUPPORTED"
+
+
+def test_reasons_show_repo_relative_paths_not_clone_paths():
+    v = verdict([diff("parser.py"), say("x")], fclaim("changed parser.py", [ABS + "parser.py:6"]))
+    assert v.status == "SUPPORTED" and "/Users/" not in v.reason and "parser.py" in v.reason
+    v = verdict([diff("parser.py"), diff("tests/test_parser.py"), say("x")], fclaim("only changed parser.py", [ABS + "parser.py"]))
+    assert v.status == "CONTRADICTED" and "/Users/" not in v.reason
