@@ -307,6 +307,8 @@ def _path_matches(claimed: str, actual: str) -> bool:
     c, a = _norm(claimed), _norm(actual)
     if not c:
         return False
+    if c in ("*", "**", "anything", "everything", "any file", "any files", "all files"):
+        return True
     if c in ("tests", "test", "tests/", "test/"):
         return is_test_path(a)
     if c.endswith("/"):
@@ -336,6 +338,12 @@ def check_files_changed(claim: Claim, records: list[Record]) -> ClaimVerdict:
         return sorted(s for p in paths for s in actual[p])
 
     if not diffs:
+        if text.startswith("did not change"):
+            # Nothing changed at all, so "I did not change X" holds for any X. Cite the
+            # records that show the code was looked at and tested without a single edit.
+            looked = sorted(r.seq for r in records if r.origin == "OBSERVED" and r.kind in ("tool_output", "test_run"))
+            return ClaimVerdict(claim.id, "SUPPORTED", looked,
+                                "No diff record anywhere in the trace: the agent changed nothing.")
         return ClaimVerdict(claim.id, "UNSUPPORTED", [],
                             "No diff records were observed, so nothing can confirm which files changed.")
 

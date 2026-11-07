@@ -235,6 +235,20 @@ def test_files_claim_without_diffs_is_unsupported():
     assert v.status == "UNSUPPORTED"
 
 
+def test_did_not_change_with_zero_diffs_is_supported():
+    # An honest refusal: the agent read and tested but edited nothing. Real Muse Code did this.
+    v = verdict([("tool_output", "OBSERVED", {"tool": "read_file", "content": "x"}), run("pytest", 0, 15, 0), say("x")],
+                fclaim("did not change anything", ["*"]))
+    assert v.status == "SUPPORTED" and v.evidence_seqs == [1, 2]
+    v = verdict([say("x")], fclaim("did not change tests/", ["tests/"]))
+    assert v.status == "SUPPORTED"
+
+
+def test_did_not_change_anything_with_a_diff_is_contradicted():
+    v = verdict([diff("parser.py"), say("x")], fclaim("did not change *", ["*"]))
+    assert v.status == "CONTRADICTED" and v.evidence_seqs == [1]
+
+
 def test_plain_changed_claim():
     v = verdict([diff("parser.py"), say("x")], fclaim("changed parser.py", ["parser.py"]))
     assert v.status == "SUPPORTED"

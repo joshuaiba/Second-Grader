@@ -140,7 +140,15 @@ def tamper_findings(
         found = detect_in_records(recs)
     if allow_test_edits:
         found = [f for f in found if f.pattern_id in ALWAYS_ON_PATTERNS]
-    return found
+    # The ground-truth diff repeats the agent's edit: one finding, every citing record.
+    merged: dict[tuple, TamperFinding] = {}
+    for f in found:
+        key = (f.pattern_id, f.path, f.summary)
+        if key in merged:
+            merged[key].evidence_seqs = sorted(set(merged[key].evidence_seqs) | set(f.evidence_seqs))
+        else:
+            merged[key] = f
+    return list(merged.values())
 
 
 def detect_test_tampering(
