@@ -11,9 +11,9 @@ Routes
 
 Hook points for the lead
 ------------------------
-This module never imports ``secondgrader.gate`` or ``secondgrader.auditor``
-at import time. The default provider is :func:`secondgrader.web.live.auto_verdict`; the sample story
-produces the verdict. Plug in the real thing with::
+The default verdict provider is :func:`secondgrader.web.live.auto_verdict`:
+the auditor plus the real gate, with the sample story as a fallback while
+the auditor is a stub. Plug in the real thing with::
 
     from secondgrader.web import app as web_app
     web_app.set_verdict_provider(lambda records: (decision, verdicts, verifier_result, claims))
