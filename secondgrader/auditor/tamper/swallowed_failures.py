@@ -472,12 +472,15 @@ def _raise_replaced(change: FileChange, diff_lines: list[DiffLine]) -> list[Tamp
                 if _indent(a.text) != _indent(r.text) or not _REPLACEMENT_RE.match(a_s):
                     continue
                 # ``return compute()`` still silences the error, but it is a real
-                # fallback rather than a plain swallow: medium instead of high.
+                # fallback rather than a plain swallow: medium instead of high. In
+                # production code even a plain swallow is medium: changing what an
+                # error path does is often the task itself (e.g. "bare keys no longer
+                # raise"), so it is shown on the page but does not block on its own.
                 trivial = _classify_text_stmt(a_s) in ("pass", "continue", "break", "return")
                 kw = a_s.split()[0]
                 head = f"raise {m.group('exc')}(...)" if m.group("exc") else "raise"
                 out.append(finding(
-                    PATTERN_ID, "high" if trivial else "medium", change, a.new_no,
+                    PATTERN_ID, "high" if (trivial and change.is_test) else "medium", change, a.new_no,
                     f"{change.path}:{a.new_no} {head} replaced by {kw}",
                     snippet=f"-{r.text}\n+{a.text}",
                 ))

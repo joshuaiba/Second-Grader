@@ -74,7 +74,7 @@ def test_pattern_id_is_registered():
 def test_dirs_mode_fixture_pair_yields_exactly_two_findings():
     findings = sf.detect(changes_from_dirs(PAIR / "base", PAIR / "final"))
     got = sorted((f.path, f.line, f.severity) for f in findings)
-    assert got == [("parser.py", 58, "high"), ("tests/test_parser.py", 21, "high")]
+    assert got == [("parser.py", 58, "medium"), ("tests/test_parser.py", 21, "high")]  # production raise swap is visible, not blocking
     for f in findings:
         assert f.pattern_id == "swallowed_failures"
         assert f.evidence_seqs == []
@@ -124,7 +124,7 @@ def test_records_mode_wrapped_assert_carries_evidence_seq():
 def test_records_mode_raise_replaced_by_return():
     final = BASE_PROD.replace('        raise ValueError("missing \'=\'")\n', "        return None\n")
     findings = sf.detect([_records_change("parser.py", BASE_PROD, final)])
-    assert [(f.line, f.severity) for f in findings] == [(9, "high")]
+    assert [(f.line, f.severity) for f in findings] == [(9, "medium")]  # production code: visible, not blocking
     assert findings[0].summary == "parser.py:9 raise ValueError(...) replaced by return"
     assert findings[0].evidence_seqs == [TEST_TAMPER_SEQ]
 
