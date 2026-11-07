@@ -31,6 +31,9 @@ SPEC = (
 )
 
 
+load_env()  # the key may live in .env rather than the environment
+
+
 @pytest.mark.skipif(not os.environ.get("GEMINI_API_KEY") and os.environ.get("SG_OFFLINE") not in ("1", "true", "yes"),
                     reason="live Gemini call: needs GEMINI_API_KEY (or SG_OFFLINE=1 with a warm cache)")
 def test_verify_returns_result_with_tests(sample_records):

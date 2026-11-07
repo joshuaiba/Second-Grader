@@ -184,9 +184,11 @@ def build_blind_input(spec: str, diff: str, observed: list[Record]) -> BlindInpu
 
 
 def _claimed_snippets(records: list[Record], min_len: int = 20) -> list[str]:
+    """Sentences of the agent's own words. ``prompt`` records are our task text (written by the
+    runner, allowed input by definition), so they are not agent text."""
     out: list[str] = []
     for r in records:
-        if r.origin != "CLAIMED":
+        if r.origin != "CLAIMED" or r.kind == "prompt":
             continue
         text = str((r.payload or {}).get("text", ""))
         for sent in re.split(r"(?<=[.!?])\s+|\n", text):
@@ -312,11 +314,28 @@ def tag_tests(source: str, prefix: str = "spec") -> dict[str, str]:
 _IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc", ".venv", "node_modules")
 
 _ASSERTION_MARKERS = ("assert", "AssertionError", "Failed:", "DID NOT RAISE")
+_TB_FRAME_RE = re.compile(r"^(?P<path>[^\s:]+\.py):(?P<line>\d+):", re.M)
 
 
-def _is_assertion_failure(message: str) -> bool:
+def _is_assertion_failure(message: str, test_file_name: str = "") -> bool:
+    """Decide whether a pytest ``<failure>`` is the code under test failing the spec.
+
+    - plain asserts, ``pytest.fail`` and ``pytest.raises`` not raising: failure
+    - an exception whose innermost frame is in the **code under test** (the
+      spec says it should not raise there): failure
+    - an exception whose innermost frame is in the generated test file itself
+      (a wrong attribute, a typo, a bad fixture): the verifier's own error,
+      never blocking
+    """
     msg = message.strip()
-    return msg.startswith(_ASSERTION_MARKERS) or "AssertionError" in msg.split("\n", 1)[0]
+    first = msg.split("\n", 1)[0]
+    if first.startswith(_ASSERTION_MARKERS) or "AssertionError" in first:
+        return True
+    frames = [m.group("path") for m in _TB_FRAME_RE.finditer(msg)]
+    if not frames:
+        return False
+    innermost = Path(frames[-1]).name
+    return bool(test_file_name) and innermost != test_file_name
 
 
 def _fresh_copy(final_code_dir: Path, dest: Path) -> None:
@@ -347,7 +366,7 @@ def _run_pytest_once(workdir: Path, test_file: Path, timeout: int) -> tuple[list
         skipped = case.find("skipped")
         if failure is not None:
             msg = (failure.get("message") or "") + "\n" + (failure.text or "")
-            if _is_assertion_failure(msg):
+            if _is_assertion_failure(msg, test_file.name):
                 results.append({"name": name, "passed": False, "outcome": "failed", "output": msg.strip()[:2000]})
             else:
                 results.append({"name": name, "passed": False, "outcome": "error", "output": msg.strip()[:2000]})

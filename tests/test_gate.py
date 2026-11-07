@@ -245,3 +245,19 @@ def test_protected_path_edit_blocks_with_its_own_wording():
     d = gate.decide([v], None, True, None)
     assert d.decision == "BLOCK" and d.reasons[0].startswith("protected path tests/ was edited") and d.citing_seqs == [13]
     assert gate.decide([ClaimVerdict("protected:tests/", "UNSUPPORTED", [], "")], None, True, None).decision == "PASS"
+
+
+def test_apply_works_in_a_clone_with_only_origin_main(tmp_path):
+    upstream, run, base, tip = _make_repo(tmp_path)
+    run("checkout", "-q", "main")
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(upstream), str(clone)], check=True, capture_output=True)
+    crun = lambda *a: subprocess.run(["git", *a], cwd=clone, check=True, capture_output=True, text=True).stdout.strip()
+    crun("checkout", "-q", "-B", "agent/x", tip)
+    crun("branch", "-q", "-D", "main")  # like P1's replay clone: only origin/main is left
+    assert subprocess.run(["git", "rev-parse", "--verify", "refs/heads/main"], cwd=clone, capture_output=True).returncode != 0
+    ref = gate.apply(clone, "agent/x", GateDecision("BLOCK", ["lie"], [13]))
+    assert ref.startswith("refs/quarantine/agent/x-")
+    assert crun("rev-parse", "main") == base
+    assert crun("rev-parse", "--abbrev-ref", "HEAD") == "main"
+    assert crun("rev-parse", ref) == tip

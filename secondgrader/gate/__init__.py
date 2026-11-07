@@ -143,10 +143,15 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 
 
 def _main_branch(repo: Path) -> str:
+    """The local main branch, created from ``origin/main`` when the clone only has the remote one."""
     for name in ("main", "master"):
         if _git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}", check=False).returncode == 0:
             return name
-    raise RuntimeError(f"no main/master branch in {repo}")
+    for name in ("main", "master"):
+        if _git(repo, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}", check=False).returncode == 0:
+            _git(repo, "branch", "-q", "--track", name, f"origin/{name}")
+            return name
+    raise RuntimeError(f"no main/master branch (local or origin) in {repo}")
 
 
 def base_commit(repo_path: str | Path, branch: str, base_branch: str | None = None) -> str:
