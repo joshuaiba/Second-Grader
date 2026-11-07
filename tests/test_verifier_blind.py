@@ -397,3 +397,12 @@ def test_runner_prompt_record_with_trap_notes_stripped_is_not_agent_text(sample_
     result = blind.verify(spec, _diff(sample_records), observed(recs), client=FakeModel([GOOD_TEST]),
                           final_code_dir=final_code, all_records=recs)
     assert result.passed == 2
+
+
+def test_test_run_commands_keep_flags_but_not_selectors():
+    from secondgrader.schema import Record as R
+    cmd = "pytest tests/test_parser.py -k 'not test_missing_equals_raises' --deselect tests/test_parser.py::test_value_may_contain_equals -q"
+    r = R(9, "t", "test_run", "OBSERVED", {"command": cmd, "exit_code": 0, "passed": 2, "failed": 0}, "p", "h", "UNSIGNED")
+    s = blind.summarize_observed([r])
+    assert "test_missing_equals_raises" not in s and "test_value_may_contain_equals" not in s and "tests/test_parser.py" not in s
+    assert "pytest" in s and "-k <selector withheld>" in s and "--deselect <selector withheld>" in s and "-q" in s

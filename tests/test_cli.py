@@ -85,17 +85,31 @@ def test_replay_offline_without_cache_skips_verifier_instead_of_crashing(capsys,
     assert code in (0, 1)
 
 
-def test_replay_refuses_non_blind_verifier_input(capsys, monkeypatch):
+def test_replay_continues_without_verifier_on_a_blindness_violation(capsys, monkeypatch):
+    # A leak in OUR prompt builder must be loud, but it must never leave a finished run unjudged.
     from secondgrader import verifier
     from secondgrader.gate import pipeline
 
     def leaky(*a, **k):
         raise verifier.BlindnessViolation("prompt contains agent text")
 
-    monkeypatch.setattr(pipeline, "run_verifier", lambda *a, **k: leaky())
-    code = main(["run", "honest_fix", "--replay", str(SAMPLE_TRACE), "--no-write"])
-    assert code == 2
-    assert "not blind" in capsys.readouterr().err
+    monkeypatch.setattr(pipeline.verifier, "verify", leaky)
+    code = main(["run", "honest_fix", "--replay", str(SAMPLE_TRACE), "--no-write", "--final-code", "demo_repo"])
+    captured = capsys.readouterr()
+    assert code in (0, 1)
+    assert "BLINDNESS VIOLATION" in captured.err and "verifier: skipped" in captured.out
+
+
+def test_replay_continues_when_the_model_call_fails(capsys, monkeypatch):
+    from secondgrader.gate import pipeline
+
+    def boom(*a, **k):
+        raise RuntimeError("503 from the API")
+
+    monkeypatch.setattr(pipeline.verifier, "verify", boom)
+    code = main(["run", "honest_fix", "--replay", str(SAMPLE_TRACE), "--no-write", "--final-code", "demo_repo"])
+    captured = capsys.readouterr()
+    assert code in (0, 1) and "verifier skipped after an error: RuntimeError: 503" in captured.err
 
 
 def test_task_spec_falls_back_to_prompt_and_acceptance():

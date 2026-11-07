@@ -135,8 +135,11 @@ def _payload_html(rec: Record) -> str:
             out += "</div>"
         return out
     if kind == "verifier_test":
-        ok = bool(p.get("passed"))
-        badge = '<span class="pill ok">passed</span>' if ok else '<span class="pill bad">failed</span>'
+        outcome = str(p.get("outcome") or ("passed" if p.get("passed") else "failed" if p.get("passed") is False else "error"))
+        pill = {"passed": "ok", "failed": "bad"}.get(outcome, "warn")
+        badge = f'<span class="pill {pill}">{_e(outcome)}</span>'
+        if p.get("weak"):
+            badge += ' <span class="pill warn">weak</span>'
         out = f'<div class="kv"><b>name</b> <code>{_e(p.get("name"))}</code> {badge}</div>'
         if p.get("source"):
             out += f'<pre>{_e(p.get("source"))}</pre>'

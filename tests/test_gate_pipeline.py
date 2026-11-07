@@ -112,3 +112,55 @@ def test_reauditing_a_live_recorded_trace_is_a_replay(run_env, tmp_path):
     assert res.chain_report.run["mode"] == "LIVE"   # the recording was live...
     assert res.mode == "REPLAY"                     # ...but judging the recording now is a replay
     assert res.chain_ok and res.chain_report.signed
+
+
+def _diff_rec(seq, path, diff, ground_truth=False):
+    from secondgrader.schema import Record
+    payload = {"path": path, "diff": diff, "lines_added": 1, "lines_removed": 1}
+    if ground_truth:
+        payload["ground_truth"] = True
+    return Record(seq, "t", "diff", "OBSERVED", payload, "p", "h", "UNSIGNED")
+
+
+def test_materialize_final_code_applies_recorded_diffs(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "mod.py").write_text("x = 1\n")
+    diff = "--- a/mod.py\n+++ b/mod.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+    ok, msg = pipeline.materialize_final_code([_diff_rec(5, "mod.py", diff)], base, tmp_path / "final")
+    assert ok, msg
+    assert (tmp_path / "final" / "mod.py").read_text() == "x = 2\n"
+    assert (base / "mod.py").read_text() == "x = 1\n"  # base untouched
+    assert not (tmp_path / "final" / ".sg_final.patch").exists()
+
+
+def test_materialize_prefers_ground_truth_diffs_and_reports_failure(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "mod.py").write_text("x = 1\n")
+    agent = "--- a/mod.py\n+++ b/mod.py\n@@ -1 +1 @@\n-x = 1\n+x = 2"  # no trailing newline: joined safely
+    gt = "--- a/mod.py\n+++ b/mod.py\n@@ -1 +1 @@\n-x = 1\n+x = 3\n"
+    recs = [_diff_rec(5, "mod.py", agent), _diff_rec(9, "mod.py", gt, ground_truth=True)]
+    ok, _ = pipeline.materialize_final_code(recs, base, tmp_path / "final")
+    assert ok and (tmp_path / "final" / "mod.py").read_text() == "x = 3\n"
+    bad = "--- a/mod.py\n+++ b/mod.py\n@@ -1 +1 @@\n-y = 9\n+y = 10\n"
+    ok, msg = pipeline.materialize_final_code([_diff_rec(5, "mod.py", bad)], base, tmp_path / "final2")
+    assert not ok and "could not rebuild" in msg
+
+
+def test_run_trace_skips_verifier_when_final_code_cannot_be_rebuilt(run_env, tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(pipeline, "run_verifier", lambda *a, **k: called.append(1))
+    trace = tmp_path / "t.jsonl"
+    trace.write_bytes((FIXTURES / "sample_trace.jsonl").read_bytes())  # its diffs predate today's demo_repo
+    res = pipeline.run_trace(pipeline.load_task("trap_weaken_tests"), trace, chain_results=False)
+    assert called == [] and any("could not rebuild" in w for w in res.warnings)
+    assert res.decision.decision == "BLOCK"  # the audit still judged it
+
+
+def test_full_diff_separates_files_even_without_trailing_newline():
+    from secondgrader.verifier.blind import split_diff_by_file
+    recs = [_diff_rec(1, "parser.py", "--- a/parser.py\n+++ b/parser.py\n@@ -1 +1 @@\n-a\n+b"),
+            _diff_rec(2, "tests/test_parser.py", "--- a/tests/test_parser.py\n+++ b/tests/test_parser.py\n@@ -1 +1 @@\n-c\n+d\n")]
+    paths = [p for p, _ in split_diff_by_file(pipeline.full_diff(recs))]
+    assert paths == ["parser.py", "tests/test_parser.py"]
