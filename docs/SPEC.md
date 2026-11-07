@@ -110,6 +110,16 @@ Each section is self-contained. Hand it straight to that owner's lead agent alon
 | **Rahul** | P2 · The Auditor | P2.1–P2.10 | Demo repo and trap tasks, claim extraction and checks, tamper detection |
 | **Josh** | P3 · The Verifier and Gate | P3.1–P3.12 | Gemini verifier, gate and git, verdict page |
 
+**How this maps onto the repo.** The repo's README and AGENTS.md were written for four owners (A–D). With three people, owner D's areas are split by which part they serve:
+
+| Owner | Was | Folders they own (per AGENTS.md boundaries) |
+|---|---|---|
+| **Kevin** | A | `secondgrader/recorder/`, `scripts/hooks/` |
+| **Rahul** | B + half of D | `secondgrader/auditor/`, `demo_repo/`, `tasks/` |
+| **Josh** | C + half of D | `secondgrader/verifier/`, `secondgrader/gate/`, `secondgrader/web/`, `secondgrader/cli.py` |
+
+Each owner also owns `tests/test_<module>.py` for their folders. The shared contract already exists in `secondgrader/schema.py`, with sample data in `fixtures/`. Build against those (§5).
+
 ### P1 · Kevin · The Recorder: *"What actually happened?"*
 
 **You own:** everything from "start a run" to "here is a signed, verifiable log of it". That covers running Muse Code, the hooks, the signed hash chain, our own ground-truth test run, chain verification, and replays.
@@ -228,7 +238,7 @@ Each section is self-contained. Hand it straight to that owner's lead agent alon
 
 ## 5. Shared contracts (freeze at 11:45)
 
-These are the **only** things owners must agree on. Exact field names live in the sample data committed at the freeze. Change them only with agreement from all three owners.
+These are the **only** things owners must agree on. The exact types already live in **`secondgrader/schema.py`** (Record, Claim, ClaimVerdict, VerifierResult, GateDecision), with sample traces in **`fixtures/`**. Anything listed below that is missing from the schema is added there, with the team's agreement. Change them only with agreement from all three owners.
 
 | Contract | Produced by | Consumed by | Must contain |
 |---|---|---|---|
