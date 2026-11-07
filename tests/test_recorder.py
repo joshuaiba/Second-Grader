@@ -375,7 +375,8 @@ def test_scripted_run_end_to_end(run_env):
     assert sorted(res.ground_truth_seqs) == res.ground_truth_seqs and res.ground_truth_seqs[-1] == recs[-1].seq
 
     # main of the upstream is untouched; the agent's work is only on its branch
-    up = traces / "demo_upstream"
+    up = Path(res.upstream)
+    assert up.parent == traces and up.name.startswith("demo_upstream-")
     main_tree = subprocess.run(["git", "-C", str(up), "rev-parse", "main^{tree}"], capture_output=True,
                                text=True, check=True).stdout.strip()
     assert main_tree == res.base_tree != res.final_tree
