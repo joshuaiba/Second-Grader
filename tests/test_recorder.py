@@ -594,3 +594,43 @@ def test_helper_agent_text_is_never_a_claim():
     assert kind == "model_message" and msg["text"] == "Running the tests now."
     assert map_event({"hook_event_name": "PostLLMCall", "session_id": MAIN, "tool_call_count": 0,
                       "output_text_preview": "All tests pass."}, MAIN) == []
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest -q",
+    "python -m pytest -v",
+    "python3 -u -m pytest -q",
+    "/usr/bin/python3.12 -m pytest",
+    ".venv/bin/pytest tests/",
+    "cd work && pytest -q",
+    "pytest -q; git status --short",
+    "PYTHONPATH=. pytest -q",
+    "uv run pytest -q",
+    "uv run --with pytest python -m pytest -v 2>&1 | tail -40",
+    "uv run --with pytest python -m pytest -v 2>&1 || uvx --with pytest python -m pytest -v 2>&1",
+    "uvx pytest",
+    "timeout 60 pytest -x",
+    "poetry run pytest",
+])
+def test_is_test_command_true(cmd):
+    from secondgrader.recorder.hooks import is_test_command
+    assert is_test_command(cmd)
+
+
+# Real commands from Muse Code runs that mention pytest without running the suite.
+@pytest.mark.parametrize("cmd", [
+    None,
+    "",
+    "ls -R",
+    "which pytest || true",
+    "command -v pytest; command -v uv; ls -la; cat pytest.ini",
+    "ls -a; which pytest || true; ls work; command -v uv || true",
+    "uv run --with pytest python /tmp/check_interp.py 2>&1; echo ---; PYTHONPATH=. uv run python /tmp/check_interp.py",
+    "pip install pytest",
+    "cat pytest.ini",
+    "python -c 'import pytest'",
+    "echo pytest",
+])
+def test_is_test_command_false(cmd):
+    from secondgrader.recorder.hooks import is_test_command
+    assert not is_test_command(cmd)
