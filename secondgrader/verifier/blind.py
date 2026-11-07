@@ -29,7 +29,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from secondgrader.schema import Record, VerifierResult
 
@@ -48,7 +48,15 @@ class TextModel(Protocol):
 # What counts as a test file
 # --------------------------------------------------------------------------- #
 
-_TEST_FILE_RE = re.compile(r"(^|/)(tests?|testing)/|(^|/)test_[^/]*\.py$|_tests?\.py$|(^|/)conftest\.py$")
+_TEST_FILE_RE = re.compile(
+    r"(^|/)(tests?|testing|specs?)/"          # tests/, test/, spec/ directories
+    r"|(^|/)tests?_[^/]*\.py$"               # test_x.py, tests_x.py
+    r"|(^|/)tests?\.py$"                     # tests.py
+    r"|_(tests?|spec)\.py$"                  # x_test.py, x_spec.py
+    r"|\.(tests?|spec)\.py$"                # x.test.py
+    r"|(^|/)conftest\.py$",
+    re.IGNORECASE,
+)
 _TEST_CONFIG = {"pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml", ".coveragerc"}
 
 
@@ -112,6 +120,23 @@ def strip_test_files(diff: str) -> tuple[str, list[str]]:
     return "".join(kept), removed
 
 
+_WRITE_MARKERS = (">", "<<", "tee ", "sed -i", "cat >", "echo ", "printf ", "python -c", "python3 -c")
+
+
+def _safe_command(command: str) -> str:
+    """Reduce a shell command to something that cannot carry file contents.
+
+    Anything that writes or embeds data (heredocs, redirects, ``echo``, inline
+    python) is reduced to its first word. Everything else is cut to its first
+    line, at most 80 characters.
+    """
+    first_line = command.strip().splitlines()[0] if command.strip() else ""
+    if any(m in command for m in _WRITE_MARKERS) or "\n" in command.strip():
+        head = first_line.split()[0] if first_line.split() else "?"
+        return f"{head} ... (command body withheld)"
+    return first_line[:80] + ("..." if len(first_line) > 80 else "")
+
+
 def summarize_observed(observed: list[Record]) -> str:
     """One line per OBSERVED record: what happened, never what was said.
 
@@ -126,7 +151,7 @@ def summarize_observed(observed: list[Record]) -> str:
         p = r.payload or {}
         if r.kind == "tool_call":
             args = p.get("args") or {}
-            detail = args.get("command") or args.get("path") or ""
+            detail = _safe_command(str(args.get("command") or args.get("path") or ""))
             lines.append(f"seq {r.seq}: tool_call {p.get('tool', '?')} {detail}".rstrip())
         elif r.kind == "tool_output":
             lines.append(f"seq {r.seq}: tool_output {p.get('tool', '?')} path={p.get('path', '')} bytes={p.get('bytes', '?')} exit={p.get('exit_code', '')}".rstrip(" exit="))
@@ -184,14 +209,19 @@ def _test_diff_lines(records: list[Record], diff: str) -> list[str]:
     return out
 
 
-def assert_blind(prompt: str, all_records: list[Record], diff: str = "") -> None:
+def assert_blind(prompt: str, all_records: list[Record], diff: str = "", *, allow: Iterable[str] = ()) -> None:
     """Mechanical check (P3.2 done-when): the prompt holds no agent text and no test code.
 
     Args:
         prompt: The exact text that will be sent to the model.
         all_records: The **full** trace, CLAIMED included, so leaks can be found.
         diff: The agent's full diff, so test-file lines can be found.
+        allow: Text that is permitted in this prompt on purpose (the probe
+            claims in the probe phase). It is removed before scanning.
     """
+    for text in allow:
+        if text:
+            prompt = prompt.replace(text, "")
     for snippet in _claimed_snippets(all_records):
         if snippet in prompt:
             raise BlindnessViolation(f"prompt contains agent text: {snippet[:60]!r}")
@@ -298,7 +328,7 @@ def _fresh_copy(final_code_dir: Path, dest: Path) -> None:
 
 def _run_pytest_once(workdir: Path, test_file: Path, timeout: int) -> tuple[list[dict[str, Any]], str]:
     junit = workdir / "verifier_junit.xml"
-    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short",
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "no:monkeypatch", "-p", "no:tmpdir", "--tb=short",
            f"--junitxml={junit}", "--rootdir", str(workdir), str(test_file)]
     try:
         proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout,
@@ -421,8 +451,9 @@ def verify(
     bi = build_blind_input(spec, diff, observed)
     blind_prompt = render_blind_prompt(bi, module_name)
     assert_blind(blind_prompt, all_records or observed, diff)
+    blind_without_spec = blind_prompt.replace(bi.spec, "")
     for p in probes or []:
-        if p.strip() and p.strip() in blind_prompt:
+        if p.strip() and p.strip() in blind_without_spec:
             raise BlindnessViolation("probe claim text leaked into the blind prompt")
 
     final_code_dir = Path(final_code_dir)
@@ -431,7 +462,7 @@ def verify(
 
     if probes:
         probe_prompt = render_probe_prompt(bi, module_name, probes)
-        assert_blind(probe_prompt, all_records or observed, diff)
+        assert_blind(probe_prompt, all_records or observed, diff, allow=probes)
         d2, s2, _ = _phase(client, probe_prompt, phase="probe", final_code_dir=final_code_dir,
                            module_name=module_name, append=recorder_append, timeout=timeout, tag_prefix="probe")
         details += d2

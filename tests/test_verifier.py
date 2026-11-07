@@ -243,21 +243,21 @@ def test_safety_allowed_modules_param():
         ("import os\n", "forbidden module 'os'"),
         ("import subprocess as sp\n", "forbidden module 'subprocess'"),
         ("import os as o\n\ndef test_z():\n    o.system('ls')\n", "forbidden module 'o'"),
-        ("os_mod = __import__('os')\n", "__import__()"),
-        ("def test_f():\n    open('x').read()\n", "open()"),
+        ("os_mod = __import__('os')\n", "'__import__'"),
+        ("def test_f():\n    open('x').read()\n", "'open'"),
         ("from os import *\n", "import *"),
         ("from os import path\n", "forbidden module 'os'"),
-        ("def test_e():\n    eval('1+1')\n", "eval()"),
-        ("def test_e():\n    exec('x=1')\n", "exec()"),
+        ("def test_e():\n    eval('1+1')\n", "'eval'"),
+        ("def test_e():\n    exec('x=1')\n", "'exec'"),
         ("def test_c():\n    ().__class__.__subclasses__()\n", "dunder attribute access"),
-        ("def test_g():\n    getattr(object, '__subclasses__')\n", "getattr(..., '__subclasses__')"),
+        ("def test_g():\n    getattr(object, '__subclasses__')\n", "'getattr'"),
         ("def test_b():\n    __builtins__['open']\n", "__builtins__"),
         ("import socket\n", "forbidden module 'socket'"),
         ("import requests\n", "forbidden module 'requests'"),
         ("import numpy\n", "not in allow-list"),
-        ("def test_l():\n    while True:\n        pass\n", "while True"),
-        ("def test_i():\n    input()\n", "input()"),
-        ("def test_bp():\n    breakpoint()\n", "breakpoint()"),
+        ("def test_l():\n    while True:\n        pass\n", "infinite 'while'"),
+        ("def test_i():\n    input()\n", "'input'"),
+        ("def test_bp():\n    breakpoint()\n", "'breakpoint'"),
     ],
 )
 def test_safety_forbidden_patterns(snippet, needle):
@@ -380,3 +380,39 @@ def test_default_transport_uses_sdk_generate_content(tmp_path, no_env_key, monke
     assert client.generate("prompt text") == "from sdk"
     assert seen == {"api_key": "k", "model": "gemini-4-argon", "contents": "prompt text"}
     assert client.calls == 1
+
+
+
+# --------------------------------------------------------------------------- #
+# Bypasses found in review: every one of these must be rejected
+# --------------------------------------------------------------------------- #
+
+BYPASSES = {
+    "typing.sys": "import typing\ndef test_x():\n    typing.sys.modules['os'].system('x')\n",
+    "collections._sys": "import collections\ndef test_x():\n    collections._sys.modules['os']\n",
+    "importorskip": "import pytest\ndef test_x():\n    pytest.importorskip('subprocess').run(['x'])\n",
+    "alias exec": "def test_x():\n    x = exec\n    x('1')\n",
+    "alias eval": "def test_x():\n    e = eval\n    e('1')\n",
+    "lambda eval": "def test_x():\n    (lambda f: f('1'))(eval)\n",
+    "pytest.os": "import pytest\ndef test_x():\n    pytest.os.system('x')\n",
+    "getattr star": "def test_x():\n    getattr(1, *['__class__'])\n",
+    "format dunder": "def test_x():\n    '{0.__class__.__mro__}'.format(1)\n",
+    "while 1": "def test_x():\n    while 1:\n        pass\n",
+    "monkeypatch": "def test_x(monkeypatch):\n    assert 1\n",
+    "tmp_path": "def test_x(tmp_path):\n    assert 1\n",
+    "vars": "def test_x():\n    vars()\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(BYPASSES))
+def test_review_bypasses_are_rejected(name):
+    assert check_test_source(BYPASSES[name]), name
+
+
+def test_parametrized_test_is_still_allowed():
+    src = (
+        "import pytest\nfrom parser import parse_kv\n\n"
+        "@pytest.mark.parametrize('text,expected', [('a=1', {'a': '1'})])\n"
+        "def test_a(text, expected):\n    assert parse_kv(text) == expected\n"
+    )
+    assert check_test_source(src) == []

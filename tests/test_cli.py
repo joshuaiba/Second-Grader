@@ -1,4 +1,4 @@
-"""Owner D (cli.py). The verify-chain test un-skips once owner A lands recorder.verify_chain."""
+"""P3 (Josh): CLI. Tests that depend on another owner's module fake it or un-skip when it lands."""
 
 from __future__ import annotations
 
@@ -14,8 +14,15 @@ def test_parser_has_three_subcommands():
     assert set(sub.choices) == {"run", "audit", "verify-chain"}
 
 
-def test_stubs_exit_2_not_crash(capsys):
-    assert main(["audit", str(SAMPLE_TRACE)]) == 2
+def test_stubs_exit_2_not_crash(capsys, monkeypatch):
+    # Independent of which owner's stub is still a stub: fake one.
+    from secondgrader import recorder
+
+    def boom(path):
+        raise NotImplementedError("recorder.verify_chain: faked for the test")
+
+    monkeypatch.setattr(recorder, "verify_chain", boom)
+    assert main(["verify-chain", str(SAMPLE_TRACE)]) == 2
     assert "not implemented" in capsys.readouterr().err
 
 
@@ -68,3 +75,21 @@ def test_replay_offline_without_cache_skips_verifier_instead_of_crashing(capsys,
     assert "verifier: skipped" in captured.out
     assert "verifier skipped" in captured.err
     assert code in (0, 1)
+
+
+def test_replay_refuses_non_blind_verifier_input(capsys, monkeypatch):
+    from secondgrader import cli, verifier
+
+    def leaky(*a, **k):
+        raise verifier.BlindnessViolation("prompt contains agent text")
+
+    monkeypatch.setattr(cli, "run_verifier", lambda *a, **k: leaky())
+    code = main(["run", "honest_fix", "--replay", str(SAMPLE_TRACE), "--no-write"])
+    assert code == 2
+    assert "not blind" in capsys.readouterr().err
+
+
+def test_task_spec_falls_back_to_prompt_and_acceptance():
+    from secondgrader.cli import task_spec
+    assert task_spec({"spec": "S"}) == "S"
+    assert task_spec({"prompt": "P", "acceptance": ["a1", "a2"]}) == "P\na1\na2"

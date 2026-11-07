@@ -53,16 +53,45 @@ def chain_status(trace: str | Path) -> tuple[bool, int | None]:
         return schema.check_hash_chain(load_trace(trace))
 
 
-def audit_records(records: list[Record]) -> tuple[list[Claim], list[ClaimVerdict]]:
-    """P2's auditor. Until it lands, no claims and no verdicts (never a verdict from guesswork)."""
+def audit_records(records: list[Record], task: dict[str, Any] | None = None,
+                  final_code: Path | None = None) -> tuple[list[Claim], list[ClaimVerdict], list[str]]:
+    """P2's auditor: ``(claims, verdicts, probe obligations)``.
+
+    Prefers ``auditor.audit(...)`` (full report with tamper findings and probes)
+    when P2 ships it, else the three basic functions. Until either lands: no
+    claims, no verdicts, no probes. Never a verdict from guesswork.
+    """
+    audit = getattr(auditor, "audit", None)
+    if audit is not None:
+        try:
+            report = audit(records, task=task, final_dir=final_code)
+            probes = [getattr(p, "text", p) for p in (getattr(report, "probes", None) or [])]
+            return list(getattr(report, "claims", [])), list(getattr(report, "verdicts", [])), [str(p) for p in probes]
+        except NotImplementedError as exc:
+            _warn(f"auditor.audit not implemented ({exc}); trying the basic functions")
+        except TypeError as exc:
+            _warn(f"auditor.audit signature mismatch ({exc}); trying the basic functions")
     try:
         claims = auditor.extract_claims(records)
         verdicts = auditor.check_claims(claims, records)
         verdicts += auditor.detect_test_tampering(records)
     except NotImplementedError as exc:
         _warn(f"auditor not implemented ({exc}); no claim verdicts")
-        return [], []
-    return claims, verdicts
+        return [], [], []
+    return claims, verdicts, []
+
+
+def task_spec(task: dict[str, Any]) -> str:
+    """The text the verifier gets: ``spec``, or P2's ``prompt`` plus ``acceptance`` sentences."""
+    spec = str(task.get("spec") or "").strip()
+    if spec:
+        return spec
+    parts = [str(task.get("prompt") or "").strip()]
+    acceptance = task.get("acceptance") or []
+    if isinstance(acceptance, str):
+        acceptance = [acceptance]
+    parts += [str(a).strip() for a in acceptance]
+    return "\n".join(x for x in parts if x)
 
 
 def full_diff(records: list[Record]) -> str:
@@ -78,12 +107,13 @@ def ground_truth(records: list[Record]) -> tuple[bool | None, int | None]:
 
 
 def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool, final_code: Path,
-                 append: Any | None) -> VerifierResult | None:
+                 append: Any | None, probes: list[str] | None = None) -> VerifierResult | None:
     try:
         client = verifier.GeminiClient(offline=offline)
         return verifier.verify(
-            str(task.get("spec", "")), full_diff(records), schema.observed(records),
+            task_spec(task), full_diff(records), schema.observed(records),
             final_code_dir=final_code, all_records=records, recorder_append=append, client=client,
+            probes=probes or None,
         )
     except (verifier.MissingApiKey, verifier.OfflineCacheMiss) as exc:
         _warn(f"verifier skipped: {exc}")
@@ -100,7 +130,10 @@ def print_report(mode: str, task: dict[str, Any], chain_ok: bool, first_bad: int
     if vr is None:
         print("verifier: skipped")
     else:
-        print(f"verifier: {vr.passed} passed, {vr.failed} failed, {len(vr.details) - vr.passed - vr.failed} errored (seqs={vr.record_seqs})")
+        errored = len(vr.details) - vr.passed - vr.failed
+        print(f"verifier: {vr.passed} passed, {vr.failed} failed, {errored} errored (seqs={vr.record_seqs})")
+        if vr.passed + vr.failed == 0:
+            print("verifier: NO COUNTABLE TESTS (generation rejected or every test errored); this does not block, but nothing was independently verified")
         for d in vr.details:
             print(f"  {d.get('outcome', '?'):<7} {d.get('name')}  {d.get('spec_sentence', '')}")
     stamp = "MERGED" if decision.decision == "PASS" else "BLOCKED"
@@ -119,7 +152,7 @@ def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool,
     """The whole pipeline on an existing trace: chain -> audit -> verify -> gate."""
     records = load_trace(trace)
     chain_ok, first_bad = chain_status(trace)
-    claims, verdicts = audit_records(records)
+    claims, verdicts, probes = audit_records(records, task, final_code)
 
     append = None
     if not no_verify and out_dir is not None:
@@ -135,7 +168,7 @@ def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool,
             _warn("recorder.append not implemented; verifier results are not written to the chain")
             out.unlink(missing_ok=True)
 
-    vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append)
+    vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append, probes=probes)
     gt_ok, gt_seq = ground_truth(records)
     decision = gate.decide(verdicts, vr, chain_ok, first_bad, claims=claims, ground_truth_ok=gt_ok, ground_truth_seq=gt_seq)
     print_report("REPLAY", task, chain_ok, first_bad, verdicts, vr, decision)
@@ -151,9 +184,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     final_code = Path(args.final_code) if args.final_code else ROOT / task.get("repo", "demo_repo")
     out_dir = None if args.no_write else Path(args.out_dir)
 
-    if args.replay:
-        return replay(task, Path(args.replay), offline=args.offline, no_verify=args.no_verify,
-                      final_code=final_code, out_dir=out_dir)
+    try:
+        if args.replay:
+            return replay(task, Path(args.replay), offline=args.offline, no_verify=args.no_verify,
+                          final_code=final_code, out_dir=out_dir)
+    except verifier.BlindnessViolation as exc:
+        print(f"error: refusing to call the verifier, its input is not blind: {exc}", file=sys.stderr)
+        return 2
 
     run_task = getattr(recorder, "run_task", None)
     if run_task is None:
@@ -174,9 +211,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
         claims = auditor.extract_claims(records)
         verdicts = auditor.check_claims(claims, records)
         verdicts += auditor.detect_test_tampering(records)
-        decision = gate.decide(verdicts, None, chain_ok, first_bad, claims=claims)
     except NotImplementedError as exc:
         return _not_implemented(exc)
+    decision = gate.decide(verdicts, None, chain_ok, first_bad, claims=claims)
     for v in verdicts:
         print(f"{v.status:<13} {v.claim_id:<12} seqs={v.evidence_seqs} {v.reason}")
     print(f"\n{decision.decision}: {'; '.join(decision.reasons) or 'no findings'}")

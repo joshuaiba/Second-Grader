@@ -196,3 +196,45 @@ def test_apply_pass_merges_no_ff_with_chain_head(tmp_path):
 def test_base_commit_is_merge_base_with_main(tmp_path):
     repo, run, base, tip = _make_repo(tmp_path)
     assert gate.base_commit(repo, "agent") == base
+
+
+def test_low_severity_tamper_is_informational_not_blocking():
+    low = ClaimVerdict("tamper:tests/test_x.py", "UNSUPPORTED", [13], "expected value edited (low)")
+    assert gate.decide([low], None, True, None).decision == "PASS"
+    high = ClaimVerdict("tamper:tests/test_x.py", "CONTRADICTED", [13], "assert weakened")
+    assert gate.decide([high], None, True, None).decision == "BLOCK"
+
+
+def test_verifier_reason_cites_only_failed_tests():
+    vr = VerifierResult(["ok", "bad", "err"], 1, 1,
+                        [{"name": "ok", "passed": True, "outcome": "passed", "seq": 20},
+                         {"name": "bad", "passed": False, "outcome": "failed", "seq": 21},
+                         {"name": "err", "passed": False, "outcome": "error", "seq": 22}], [20, 21, 22])
+    d = gate.decide([], vr, True, None)
+    assert d.decision == "BLOCK"
+    assert d.citing_seqs == [21]
+    assert "bad" in d.reasons[0] and "err" not in d.reasons[0] and "ok" not in d.reasons[0]
+
+
+def test_apply_block_with_dirty_main_checked_out(tmp_path):
+    repo, run, base, tip = _make_repo(tmp_path)
+    run("checkout", "-q", "main")
+    (repo / "README").write_text("dirty edit on main")
+    gate.apply(repo, "agent", GateDecision("BLOCK", ["x"], []))
+    assert run("rev-parse", "main").stdout.strip() == base
+    assert (repo / "README").read_text() == "base"
+    assert run("status", "--porcelain").stdout == ""
+
+
+def test_apply_pass_conflict_aborts_cleanly(tmp_path):
+    repo, run, base, tip = _make_repo(tmp_path)
+    run("checkout", "-q", "main")
+    (repo / "x.txt").write_text("main's own x")
+    run("add", "x.txt")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "conflicting")
+    main_before = run("rev-parse", "main").stdout.strip()
+    with pytest.raises(RuntimeError):
+        gate.apply(repo, "agent", GateDecision("PASS", [], []))
+    assert run("rev-parse", "main").stdout.strip() == main_before
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert run("status", "--porcelain").stdout == ""

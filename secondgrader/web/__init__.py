@@ -329,20 +329,30 @@ def _verifier_section(vr: VerifierResult | None) -> str:
             '<section class="card verifier"><h2>Blind verifier</h2>'
             '<p class="muted">Verifier did not run.</p></section>'
         )
+    errored = max(0, len(vr.details) - int(vr.passed) - int(vr.failed))
     summary = (
         f'<div class="kv"><span class="pill ok">{int(vr.passed)} passed</span> '
         f'<span class="pill {"bad" if vr.failed else "ok"}">{int(vr.failed)} failed</span> '
-        f'<span class="muted">tests written: {len(vr.tests_written)}</span></div>'
+        + (f'<span class="pill warn">{errored} errored</span> ' if errored else "")
+        + f'<span class="muted">tests written: {len(vr.tests_written)}</span></div>'
     )
+    if int(vr.passed) + int(vr.failed) == 0:
+        summary += (
+            '<p class="note warn-text"><b>No countable verifier tests.</b> The generated tests were rejected or '
+            "every one of them errored. This never blocks, but nothing here was independently verified.</p>"
+        )
     written = "".join(f"<li><code>{_e(t)}</code></li>" for t in vr.tests_written) or '<li class="muted">none</li>'
     rows = []
     for d in vr.details:
-        ok = bool(d.get("passed"))
+        outcome = str(d.get("outcome") or ("passed" if d.get("passed") else "failed"))
+        pill = {"passed": "ok", "failed": "bad"}.get(outcome, "warn")
         out = str(d.get("output", ""))
         snippet = out if len(out) <= 400 else out[:400] + "..."
+        sentence = _e(d.get("spec_sentence", ""))
         rows.append(
-            f"<tr><td><code>{_e(d.get('name'))}</code></td>"
-            f'<td><span class="pill {"ok" if ok else "bad"}">{"passed" if ok else "failed"}</span></td>'
+            f"<tr><td><code>{_e(d.get('name'))}</code>"
+            + (f'<div class="muted small">{sentence}</div>' if sentence else "")
+            + f'</td><td><span class="pill {pill}">{_e(outcome)}</span></td>'
             f"<td><pre>{_e(snippet)}</pre></td></tr>"
         )
     details = (
@@ -413,7 +423,8 @@ header h1 { margin:0; font-size:1.25rem } header .task { color:var(--muted) }
 .kv { margin:.25rem 0 } .kv b { color:var(--muted); font-weight:600; margin-right:.3em }
 .muted { color:var(--muted) }
 .pill { display:inline-block; padding:.05em .55em; border-radius:999px; font-size:.8em; font-weight:700 }
-.pill.ok { background:var(--green-bg); color:var(--green) } .pill.bad { background:var(--red-bg); color:var(--red) }
+.pill.ok { background:var(--green-bg); color:var(--green) } .pill.warn{background:var(--amber-bg,#4a3a10);color:var(--amber,#e0b84a)}
+.pill.bad { background:var(--red-bg); color:var(--red) }
 .status { font-weight:700; padding:.1em .5em; border-radius:4px; font-size:.85em; white-space:nowrap }
 .status.supported { background:var(--green-bg); color:var(--green) }
 .status.contradicted { background:var(--red-bg); color:var(--red) }

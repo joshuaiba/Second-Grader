@@ -9,7 +9,9 @@ lists **every** reason that applies, each with the record seqs that prove it:
       (critical = kind ``tests_pass`` or ``files_changed``; known only when the
       caller passes the ``claims``; an UNSUPPORTED verdict with no claim
       context never blocks on its own)
-    - any tamper finding (verdict whose claim_id starts with ``tamper:``)
+    - any tamper finding (claim_id ``tamper:<pattern>``) with status CONTRADICTED;
+      an UNSUPPORTED tamper verdict is informational (low severity) and is
+      shown but never blocks
     - any verifier assertion failure                 -> cite its record_seqs
     - our own ground-truth test run failed           -> cite its record seq
 
@@ -87,6 +89,8 @@ def decide(
 
     for v in verdicts:
         if v.claim_id.startswith(TAMPER_PREFIX):
+            if v.status != "CONTRADICTED":
+                continue  # low-severity finding: shown on the page, does not block
             target = v.claim_id[len(TAMPER_PREFIX):]
             reasons.append(_with_reason(f"test tampering detected in {target}", v.reason))
             citing.extend(v.evidence_seqs)
@@ -98,10 +102,12 @@ def decide(
             citing.extend(v.evidence_seqs)
 
     if verifier_result is not None and verifier_result.failed > 0:
-        failed_names = [d.get("name", "?") for d in verifier_result.details if not d.get("passed", False)]
-        names = ", ".join(failed_names) if failed_names else f"{verifier_result.failed} test(s)"
+        failed = [d for d in verifier_result.details
+                  if d.get("outcome", "failed" if d.get("passed") is False else "passed") == "failed"]
+        names = ", ".join(str(d.get("name", "?")) for d in failed) or f"{verifier_result.failed} test(s)"
         reasons.append(f"independent verifier test(s) failed: {names}")
-        citing.extend(verifier_result.record_seqs)
+        failed_seqs = [d["seq"] for d in failed if isinstance(d.get("seq"), int)]
+        citing.extend(failed_seqs or verifier_result.record_seqs)
 
     if ground_truth_ok is False:
         where = f" (seq {ground_truth_seq})" if ground_truth_seq is not None else ""
@@ -182,14 +188,19 @@ def apply(
         if decision.citing_seqs:
             msg.append(f"Cited-Seqs: {', '.join(map(str, decision.citing_seqs))}")
         _git(repo, "checkout", "-q", "-f", base_branch)
-        _git(repo, "merge", "--no-ff", "-q", "-m", "\n".join(msg), branch)
+        _git(repo, "reset", "-q", "--hard")
+        try:
+            _git(repo, "merge", "--no-ff", "-q", "-m", "\n".join(msg), branch)
+        except subprocess.CalledProcessError as exc:
+            _git(repo, "merge", "--abort", check=False)
+            _git(repo, "reset", "-q", "--hard", check=False)
+            raise RuntimeError(f"merge of {branch} into {base_branch} failed and was aborted: {exc.stderr.strip()}") from exc
         return base_branch
 
     quarantine = f"refs/quarantine/{branch}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
     _git(repo, "update-ref", quarantine, tip)
-    current = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    if current == branch:
-        _git(repo, "checkout", "-q", "-f", base_branch)
+    _git(repo, "checkout", "-q", "-f", base_branch)
+    _git(repo, "reset", "-q", "--hard")  # main's working tree matches main's tree exactly
     _git(repo, "clean", "-fdq")
     _git(repo, "branch", "-D", "-q", branch)
     return quarantine

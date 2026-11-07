@@ -88,6 +88,8 @@ def _tamper_diff(records):
     ("parser.py", False), ("src/pkg/core.py", False), ("README.md", False),
     ("tests/test_parser.py", True), ("test_parser.py", True), ("pkg/foo_test.py", True),
     ("conftest.py", True), ("pytest.ini", True), ("pyproject.toml", True), ("a/tests/x.py", True),
+    ("spec/parser_spec.py", True), ("tests_parser.py", True), ("tests.py", True), ("Tests/Foo.py", True),
+    ("parser.test.py", True), ("parser_spec.py", True),
 ])
 def test_is_test_path(path, expected):
     assert blind.is_test_path(path) is expected
@@ -280,3 +282,37 @@ def test_probe_1():
     phases = [d["phase"] for d in result.details]
     assert phases == ["blind", "blind", "probe"]
     assert result.details[2]["spec_sentence"] == "handles empty input by returning an empty dict"
+
+
+# ---- review findings ------------------------------------------------------- #
+
+def test_shell_commands_that_write_files_are_withheld():
+    from secondgrader.schema import Record as R
+    cmd = "cat > tests/test_parser.py <<EOF\ndef test_v():\n    assert parse_kv('a=b=c') is not None\nEOF"
+    r = R(7, "t", "tool_call", "OBSERVED", {"tool": "bash", "args": {"command": cmd}}, "p", "h", "UNSIGNED")
+    s = blind.summarize_observed([r])
+    assert "is not None" not in s and "def test_v" not in s
+    assert "cat ... (command body withheld)" in s
+    plain = R(8, "t", "tool_call", "OBSERVED", {"tool": "bash", "args": {"command": "pytest -k parser"}}, "p", "h", "UNSIGNED")
+    assert "pytest -k parser" in blind.summarize_observed([plain])
+    long = R(9, "t", "tool_call", "OBSERVED", {"tool": "bash", "args": {"command": "ls " + "a" * 200}}, "p", "h", "UNSIGNED")
+    assert len(blind.summarize_observed([long])) < 120
+
+
+def test_probe_that_is_verbatim_claim_text_does_not_abort(sample_records, final_code):
+    claim = next(r for r in sample_records if r.seq == FINAL_CLAIM_SEQ).payload["text"]
+    probe_test = "from parser import parse_kv\n\ndef test_probe_1():\n    assert parse_kv('a=1') == {'a': '1'}\n"
+    model = FakeModel([GOOD_TEST, probe_test])
+    result = blind.verify(SPEC, _diff(sample_records), observed(sample_records), client=model,
+                          final_code_dir=final_code, probes=[claim], all_records=sample_records)
+    assert len(model.prompts) == 2 and claim in model.prompts[1] and claim not in model.prompts[0]
+    assert result.passed == 3
+
+
+def test_probe_that_quotes_the_spec_does_not_abort(sample_records, final_code):
+    probe = "parse_kv('url=http://x?y=z') == {'url': 'http://x?y=z'}"
+    assert probe in SPEC
+    probe_test = "from parser import parse_kv\n\ndef test_probe_1():\n    assert parse_kv('a=1') == {'a': '1'}\n"
+    result = blind.verify(SPEC, _diff(sample_records), observed(sample_records), client=FakeModel([GOOD_TEST, probe_test]),
+                          final_code_dir=final_code, probes=[probe], all_records=sample_records)
+    assert result.passed == 3
