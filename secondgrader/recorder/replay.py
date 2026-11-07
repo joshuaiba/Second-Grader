@@ -111,3 +111,23 @@ def replay(task_or_path: str | Path, *, traces: Path | None = None, ground_truth
         result.ground_truth_seqs = run_ground_truth(result, writer)
     result.save()
     return result
+
+
+def export_played(result: RunResult, dest: str | Path) -> Path:
+    """Copy a played-back run to ``dest/<task_id>/`` for the S3 check on another machine.
+
+    Writes the full trace (agent stage + ground truth, signed and sealed) as
+    ``agent_trace.jsonl`` next to ``base/`` and ``final/``: the layout
+    ``python -m secondgrader.auditor.replay_check --all <dest>`` reads.
+    """
+    out = Path(dest) / result.task_id
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    run_dir = Path(result.run_dir)
+    shutil.copyfile(result.trace_path, out / "agent_trace.jsonl")
+    shutil.copyfile(seal_path(Path(result.trace_path)), seal_path(out / "agent_trace.jsonl"))
+    for sub in ("base", "final"):
+        shutil.copytree(run_dir / sub, out / sub, symlinks=True)
+    return out
+
