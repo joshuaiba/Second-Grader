@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from secondgrader import auditor, gate
+from secondgrader.gate import pipeline
 from secondgrader.schema import Claim, ClaimVerdict, GateDecision, Record, VerifierResult, check_hash_chain, observed
 from secondgrader.web.sample import sample_verdict
 
@@ -45,20 +46,8 @@ def verifier_result_from_records(records: list[Record]) -> VerifierResult | None
 
 
 def ground_truth_from_records(records: list[Record]) -> tuple[bool | None, int | None]:
-    """``(passed, seq)`` of our own full test run on the final tree, or ``(None, None)``.
-
-    Only a ``test_run`` with ``ground_truth: true`` whose ``phase`` is
-    ``full_final`` (or absent, for older traces) counts. The recorder's
-    ``collect_base`` / ``collect_final`` runs are collection only and are ignored.
-    """
-    for r in reversed(observed(records)):
-        p = r.payload or {}
-        if r.kind != "test_run" or not p.get("ground_truth"):
-            continue
-        if p.get("phase", "full_final") != "full_final":
-            continue
-        return p.get("exit_code") == 0, r.seq
-    return None, None
+    """``(passed, seq)`` of our own full_final run, or ``(None, None)``. One rule, defined in the pipeline."""
+    return pipeline.ground_truth(records)
 
 
 def _is_hand_written_fixture(records: list[Record]) -> bool:

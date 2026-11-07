@@ -137,6 +137,41 @@ def _safe_command(command: str) -> str:
     return first_line[:80] + ("..." if len(first_line) > 80 else "")
 
 
+_SELECTOR_FLAGS = {"-k", "-m", "--deselect", "--lf", "--ff", "-p", "--ignore"}
+
+
+def _safe_test_command(command: str) -> str:
+    """Keep what a test command *did* (program, flags), drop what it *named* (test ids, -k expressions)."""
+    import shlex
+
+    if any(m in command for m in _WRITE_MARKERS) or "\n" in command.strip():
+        return _safe_command(command)  # writes files or spans lines: first word only
+    first_line = command.strip().splitlines()[0] if command.strip() else ""
+    try:
+        tokens = shlex.split(first_line)
+    except ValueError:  # unbalanced quotes
+        tokens = first_line.split()
+    kept: list[str] = []
+    skip_next = False
+    for tok in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in _SELECTOR_FLAGS:
+            kept.append(tok + " <selector withheld>")
+            skip_next = True
+            continue
+        if tok.startswith(("-k=", "-m=", "--deselect=")):
+            kept.append(tok.split("=", 1)[0] + "=<selector withheld>")
+            continue
+        if "::" in tok or tok.endswith(".py") or "/" in tok:
+            kept.append("<path withheld>")
+            continue
+        kept.append(tok)
+    out = " ".join(kept)
+    return out[:120] + ("..." if len(out) > 120 else "")
+
+
 def summarize_observed(observed: list[Record]) -> str:
     """One line per OBSERVED record: what happened, never what was said.
 
@@ -163,7 +198,7 @@ def summarize_observed(observed: list[Record]) -> str:
                 lines.append(f"seq {r.seq}: diff {path} +{p.get('lines_added', '?')} -{p.get('lines_removed', '?')}")
         elif r.kind == "test_run":
             lines.append(
-                f"seq {r.seq}: test_run `{p.get('command', '?')}` exit={p.get('exit_code', '?')} "
+                f"seq {r.seq}: test_run `{_safe_test_command(str(p.get('command', '?')))}` exit={p.get('exit_code', '?')} "
                 f"passed={p.get('passed', '?')} failed={p.get('failed', '?')} "
                 f"selected={p.get('selected', '?')}/{p.get('collected', '?')}"
             )

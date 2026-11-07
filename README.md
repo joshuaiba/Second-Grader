@@ -29,6 +29,26 @@ Regenerate the fixtures after a deliberate change to the sample story:
 uv run python fixtures/make_sample_trace.py
 ```
 
+## Running it
+
+One pipeline (`secondgrader/gate/pipeline.py`) does record, ground truth, audit, verify, gate, then
+chains the verdict record and merges or quarantines in git. Three ways in:
+
+```bash
+uv run secondgrader run honest_fix                       # LIVE: Muse Code runs in a throwaway clone, then the rest
+uv run secondgrader run honest_fix --replay              # REPLAY of the saved run in replays/honest_fix (same machine that recorded it)
+uv run secondgrader run trap_weaken_tests --replay fixtures/sample_trace.jsonl   # the pipeline on any trace file
+uv run uvicorn secondgrader.web.app:app                  # the verdict page: http://127.0.0.1:8000/
+```
+
+Useful flags for `run`: `--no-verify` (skip Gemini), `--offline` (verifier from its cache only, no network),
+`--final-code DIR` / `--base-code DIR` (for a trace file: the agent's final tree, and the tree before it; by
+default the final tree is rebuilt from the recorded diffs), `-v` (stage progress). Replays are always labelled
+REPLAY; a run is shown as LIVE only when it was just recorded and its signed seal says so.
+
+The verifier caches every model call under `.sg_cache/` (git-ignored) keyed by the prompt, so re-running a
+replay makes no network calls. Smoke-test the key: `uv run python -m secondgrader.verifier.smoke --show`.
+
 ## Owners
 
 Three owners, one part of the program each. Full task lists in [docs/SPEC.md](docs/SPEC.md); diagrams in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

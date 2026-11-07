@@ -419,3 +419,19 @@ def test_parametrized_test_is_still_allowed():
         "def test_a(text, expected):\n    assert parse_kv(text) == expected\n"
     )
     assert check_test_source(src) == []
+
+
+def test_shadowed_builtin_names_are_ordinary_variables():
+    src = ("from parser import parse_kv\n\n"
+           "def test_a():\n    input = 'debug=1'\n    dir = {'debug': '1'}\n    assert parse_kv(input) == dir\n")
+    assert check_test_source(src) == []
+    src2 = "from parser import parse_kv\n\ndef test_b(input):\n    assert parse_kv(input)\n"
+    assert check_test_source(src2) == []
+    # but the dangerous ones can never be rebound into harmlessness
+    assert check_test_source("def test_c():\n    exec = 1\n    exec\n")
+
+
+def test_dunder_text_in_test_data_is_allowed_but_attribute_walks_are_not():
+    assert check_test_source("from parser import parse_kv\n\ndef test_a():\n    assert parse_kv('__name__=x') == {'__name__': 'x'}\n") == []
+    assert check_test_source("def test_b():\n    '{0.__class__.__mro__}'.format(1)\n")
+    assert check_test_source("def test_c():\n    s = 'a.__subclasses__'\n")

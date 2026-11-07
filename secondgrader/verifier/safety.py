@@ -99,6 +99,8 @@ FORBIDDEN_DUNDER_ATTRS: frozenset[str] = frozenset(
 
 DEFAULT_MAX_BYTES = 20_000
 
+_DUNDER_IN_STRING_RE = __import__("re").compile(r"\.__\w+__|\{[^}]*__\w+__|__(class|subclasses|globals|builtins|bases|mro|dict|code|import|getattribute|reduce\w*)__")
+
 
 def _top(name: str) -> str:
     return name.split(".", 1)[0]
@@ -154,7 +156,7 @@ def check_test_source(
       6. No calls to ``FORBIDDEN_CALLS``; no ``getattr(x, "__...")``.
       7. No ``from x import *``.
       8. No dunder attribute access (``__class__``, ``__subclasses__``, ...), no
-         string literal containing ``__`` (blocks ``"{0.__class__}".format(...)``).
+         string literal that walks a dunder attribute (blocks ``"{0.__class__}".format(...)``).
       9. No ``while <truthy constant>`` without a ``break`` (cheap infinite-loop guard).
      10. No attribute named like a forbidden module or escape hatch, whatever the root
          (``typing.sys``, ``collections._sys``, ``pytest.importorskip``); no private
@@ -187,6 +189,14 @@ def check_test_source(
 
     # Names bound to forbidden modules, e.g. ``import os as o`` -> {"o"}.
     tainted: set[str] = set()
+    # Forbidden builtin names the test rebinds (``input = "debug"``, a parameter called ``dir``): from the
+    # first binding on, loads of that name are the local variable, not the builtin.
+    first_bound: dict[str, int] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id in FORBIDDEN_CALLS:
+            first_bound[n.id] = min(first_bound.get(n.id, n.lineno), n.lineno)
+        elif isinstance(n, ast.arg) and n.arg in FORBIDDEN_CALLS:
+            first_bound[n.arg] = min(first_bound.get(n.arg, n.lineno), n.lineno)
 
     for node in ast.walk(tree):
         line = getattr(node, "lineno", "?")
@@ -244,15 +254,20 @@ def check_test_source(
 
         elif isinstance(node, ast.Name):
             if node.id in FORBIDDEN_CALLS:
-                violations.append(f"line {line}: use of forbidden builtin '{node.id}' is not allowed")
+                bound_at = first_bound.get(node.id)
+                shadowed = bound_at is not None and node.lineno >= bound_at and node.id not in ("exec", "eval", "compile", "__import__", "open", "getattr", "setattr", "delattr", "globals", "locals", "breakpoint")
+                if not shadowed:
+                    violations.append(f"line {line}: use of forbidden builtin '{node.id}' is not allowed")
             elif node.id in FORBIDDEN_DUNDER_ATTRS or (node.id.startswith("__") and node.id.endswith("__")):
                 violations.append(f"line {line}: use of '{node.id}' is not allowed")
             elif node.id in FORBIDDEN_MODULES and node.id not in {"io", "http", "signal", "cache"}:
                 pass  # a bare name like ``os`` without import is a NameError at runtime, harmless
 
         elif isinstance(node, ast.Constant):
-            if isinstance(node.value, str) and "__" in node.value:
-                violations.append(f"line {line}: string literal containing '__' is not allowed")
+            # Format-string attribute walks ('{0.__class__}') and dotted dunder access in strings; a plain
+            # '__name__=x' test input is fine.
+            if isinstance(node.value, str) and _DUNDER_IN_STRING_RE.search(node.value):
+                violations.append(f"line {line}: string literal with dunder attribute access is not allowed")
 
         elif isinstance(node, ast.While):
             if _is_truthy_const(node.test) and not _loop_has_break(node):

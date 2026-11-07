@@ -702,3 +702,48 @@ def test_replay_seal_beats_a_live_request(client, monkeypatch):
     monkeypatch.setattr(recorder, "verify_report", fake_report)
     r = client.get("/?mode=LIVE")
     assert 'class="mode mode-replay"' in r.text and 'class="mode mode-live"' not in r.text
+
+
+
+def test_chain_override_block_cites_the_bad_record(client, monkeypatch):
+    from secondgrader import recorder
+    from secondgrader.web import app as app_mod
+    from secondgrader.web import live
+
+    real = recorder.verify_report
+
+    def fake_report(path, *a, **k):
+        rep = real(path, *a, **k)
+        rep.ok, rep.first_bad_seq, rep.reason, rep.detail = False, 7, "sig", "seq 7 signature does not verify"
+        return rep
+
+    monkeypatch.setattr(recorder, "verify_report", fake_report)
+    # provider says PASS with nothing cited (hashes alone looked fine)
+    monkeypatch.setitem(app_mod.providers, "verdict", lambda recs: (GateDecision("PASS"), [], None, []))
+    r = client.get("/?trace=fixtures/samples/honest.jsonl")
+    assert "BLOCKED" in r.text and "Hash chain broken at seq" in r.text
+    assert 'href="#rec-7"' in r.text  # "seq 7" is linkified; the citing list also carries #7
+
+
+def test_verifier_test_record_shows_its_outcome_not_a_false_failure():
+    recs = [_rec(1, "verifier_test", {"name": "t_err", "passed": None, "outcome": "error", "output": "ImportError"}),
+            _rec(2, "verifier_test", {"name": "t_weak", "passed": True, "outcome": "passed", "weak": True, "output": ""})]
+    html = web.render_records(recs)
+    assert ">error<" in html and ">weak<" in html and ">failed<" not in html
+
+
+def test_api_run_real_type_error_is_not_swallowed(client, monkeypatch):
+    from secondgrader.web import app as app_mod
+
+    def broken(task_id, mode, trace=None):
+        raise TypeError("unsupported operand type(s) for /: 'PosixPath' and 'list'")
+
+    monkeypatch.setitem(app_mod.providers, "run", broken)
+    with pytest.raises(TypeError):
+        client.post("/api/run", json={"task": "honest_fix", "mode": "REPLAY", "trace": "fixtures/samples/honest.jsonl"})
+
+
+def test_stage_list_matches_the_pipeline():
+    from secondgrader.gate.pipeline import STAGES
+    from secondgrader.web import app as app_mod
+    assert app_mod.STAGES == list(STAGES)
