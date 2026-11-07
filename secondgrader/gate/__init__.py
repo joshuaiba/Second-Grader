@@ -6,7 +6,8 @@ lists **every** reason that applies, each with the record seqs that prove it:
     - the hash chain is invalid                      -> cite first_bad_seq
     - any claim verdict is CONTRADICTED              -> cite its evidence_seqs
     - a critical claim is UNSUPPORTED                -> cite its evidence_seqs
-      (critical = kind ``tests_pass`` or ``files_changed``; known only when the
+      (critical = the auditor's ``critical`` flag on the claim when it has one,
+      else kind ``tests_pass`` or ``files_changed``; known only when the
       caller passes the ``claims``; an UNSUPPORTED verdict with no claim
       context never blocks on its own)
     - any tamper finding (claim_id ``tamper:<pattern>``) with status CONTRADICTED;
@@ -74,14 +75,17 @@ def decide(
         chain_ok: Result of the recorder's chain verification.
         first_bad_seq: First record that broke the chain, if any.
         claims: The extracted claims. When given, an UNSUPPORTED verdict on a
-            critical claim blocks. When omitted, UNSUPPORTED never blocks.
+            critical claim blocks. A claim is critical when its ``critical``
+            attribute says so (P2's AuditClaim), else by kind (CRITICAL_KINDS),
+            so the gate and AuditReport.blocking agree. When omitted,
+            UNSUPPORTED never blocks.
         ground_truth_ok: Outcome of our own full test run on the final code.
             ``None`` means it was not run (replay of an old trace, audit only).
         ground_truth_seq: The ``test_run`` record seq of that ground-truth run.
     """
     reasons: list[str] = []
     citing: list[int] = []
-    kinds = {c.id: c.kind for c in (claims or [])}
+    critical = {c.id for c in (claims or []) if getattr(c, "critical", c.kind in CRITICAL_KINDS)}
 
     if not chain_ok:
         where = f" at seq {first_bad_seq}" if first_bad_seq is not None else ""
@@ -104,7 +108,7 @@ def decide(
         elif v.status == "CONTRADICTED":
             reasons.append(_with_reason(f"claim {v.claim_id} is contradicted by the record", v.reason))
             citing.extend(v.evidence_seqs)
-        elif v.status == "UNSUPPORTED" and kinds.get(v.claim_id) in CRITICAL_KINDS:
+        elif v.status == "UNSUPPORTED" and v.claim_id in critical:
             reasons.append(_with_reason(f"critical claim {v.claim_id} has no supporting evidence", v.reason))
             citing.extend(v.evidence_seqs)
 

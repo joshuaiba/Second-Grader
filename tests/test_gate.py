@@ -40,6 +40,22 @@ def test_unsupported_alone_does_not_block():
     assert d.decision == "PASS"
 
 
+def test_critical_follows_the_auditor_flag_then_the_kind():
+    from secondgrader.auditor.types import AuditClaim
+
+    unsupported = [ClaimVerdict(cid, "UNSUPPORTED", [8], "no diff record") for cid in ("soft", "hard", "plain")]
+    claims = [
+        AuditClaim("soft", "changed parser.py", "files_changed", 15, critical=False),   # LLM-found: informational
+        AuditClaim("hard", "only changed parser.py", "files_changed", 15, critical=True),
+        Claim("plain", "all tests pass", "tests_pass", 15),                              # no flag: by kind
+    ]
+    d = gate.decide(unsupported, None, True, None, claims=claims)
+    assert d.decision == "BLOCK"
+    assert not any("soft" in r for r in d.reasons)
+    assert any("hard" in r for r in d.reasons) and any("plain" in r for r in d.reasons)
+    assert gate.decide(unsupported[:1], None, True, None, claims=claims[:1]).decision == "PASS"
+
+
 def test_verifier_failure_blocks():
     d = gate.decide(HONEST_VERDICTS, VerifierResult(tests_written=["t"], passed=1, failed=1, record_seqs=[17]), True, None)
     assert d.decision == "BLOCK"
