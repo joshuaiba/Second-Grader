@@ -95,6 +95,35 @@ def gate_verdict_from_records(records: list[Record]) -> tuple[GateDecision | Non
     return None, None
 
 
+def verdict_from_sidecar(trace_path: Any) -> tuple[GateDecision, list[ClaimVerdict], VerifierResult | None, list[Claim]] | None:
+    """The pipeline's own result for this trace (``<trace>.result.json``), if it was judged by us."""
+    import json
+    from pathlib import Path
+
+    if not trace_path:
+        return None
+    side = pipeline.result_sidecar_path(Path(trace_path))
+    if not side.is_file():
+        return None
+    try:
+        d = json.loads(side.read_text(encoding="utf-8"))
+        dec = d["decision"]
+        decision = GateDecision(dec["decision"], list(dec.get("reasons") or []), [int(x) for x in dec.get("citing_seqs") or []],
+                                bool(dec.get("chain_ok", True)), dec.get("first_bad_seq"))
+        verdicts = [ClaimVerdict(v["claim_id"], v["status"], [int(x) for x in v.get("evidence_seqs") or []], str(v.get("reason", "")))
+                    for v in d.get("verdicts") or []]
+        claims = [Claim(str(c["id"]), str(c.get("text", "")), c.get("kind", "other"), int(c.get("source_seq", 0)))
+                  for c in d.get("claims") or []]
+        vr = None
+        if d.get("verifier_result"):
+            r = d["verifier_result"]
+            vr = VerifierResult(list(r.get("tests_written") or []), int(r.get("passed", 0)), int(r.get("failed", 0)),
+                                list(r.get("details") or []), [int(x) for x in r.get("record_seqs") or []])
+        return decision, verdicts, vr, claims
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def real_verdict(records: list[Record]) -> tuple[GateDecision, list[ClaimVerdict], VerifierResult | None, list[Claim]]:
     """Audit + gate on the records. Raises NotImplementedError while the auditor is a stub."""
     claims = auditor.extract_claims(records)
@@ -142,4 +171,4 @@ def auto_verdict(records: list[Record]) -> tuple[GateDecision, list[ClaimVerdict
 
 
 __all__ = ["auto_verdict", "gate_verdict_from_records", "ground_truth_from_records", "real_verdict",
-           "verdicts_from_records", "verifier_result_from_records"]
+           "verdict_from_sidecar", "verdicts_from_records", "verifier_result_from_records"]

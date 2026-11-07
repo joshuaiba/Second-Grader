@@ -164,3 +164,20 @@ def test_full_diff_separates_files_even_without_trailing_newline():
             _diff_rec(2, "tests/test_parser.py", "--- a/tests/test_parser.py\n+++ b/tests/test_parser.py\n@@ -1 +1 @@\n-c\n+d\n")]
     paths = [p for p, _ in split_diff_by_file(pipeline.full_diff(recs))]
     assert paths == ["parser.py", "tests/test_parser.py"]
+
+
+def test_run_trace_writes_a_result_sidecar(run_env, tmp_path):
+    import json
+    trace = tmp_path / "t.jsonl"
+    trace.write_bytes((SAMPLES / "honest.jsonl").read_bytes())
+    res = pipeline.run_trace(pipeline.load_task("honest_fix"), trace, final_code=FIXTURES.parent / "demo_repo", no_verify=True)
+    side = pipeline.result_sidecar_path(trace)
+    assert side.is_file()
+    d = json.loads(side.read_text())
+    assert d["decision"]["decision"] == res.decision.decision and d["mode"] == "REPLAY"
+    # chain_results=False (judging in place) writes nothing
+    trace2 = tmp_path / "t2.jsonl"
+    trace2.write_bytes((SAMPLES / "honest.jsonl").read_bytes())
+    pipeline.run_trace(pipeline.load_task("honest_fix"), trace2, final_code=FIXTURES.parent / "demo_repo", no_verify=True,
+                       chain_results=False)
+    assert not pipeline.result_sidecar_path(trace2).exists()

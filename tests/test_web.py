@@ -747,3 +747,25 @@ def test_stage_list_matches_the_pipeline():
     from secondgrader.gate.pipeline import STAGES
     from secondgrader.web import app as app_mod
     assert app_mod.STAGES == list(STAGES)
+
+
+
+def test_page_prefers_the_pipeline_sidecar_for_the_shown_trace(client, monkeypatch, tmp_path):
+    import json
+    from secondgrader.web import app as app_mod
+    trace = tmp_path / "judged.jsonl"
+    trace.write_bytes((FIXTURES / "samples" / "honest.jsonl").read_bytes())
+    sidecar = {
+        "decision": {"decision": "BLOCK", "reasons": ["independent verifier test(s) failed: test_x"], "citing_seqs": [], "chain_ok": True, "first_bad_seq": None},
+        "verdicts": [{"claim_id": "r14-1", "status": "SUPPORTED", "evidence_seqs": [13, 18], "reason": "fine"}],
+        "claims": [{"id": "r14-1", "text": "All tests pass", "kind": "tests_pass", "source_seq": 14}],
+        "verifier_result": {"tests_written": ["test_x"], "passed": 0, "failed": 1,
+                            "details": [{"name": "test_x", "passed": False, "outcome": "failed", "output": "assert 1 == 2", "spec_sentence": "s"}],
+                            "record_seqs": []},
+        "mode": "REPLAY",
+    }
+    trace.with_name(trace.name + ".result.json").write_text(json.dumps(sidecar))
+    monkeypatch.setattr(app_mod, "REPO_ROOT", tmp_path)
+    r = client.get(f"/?trace={trace}")
+    assert r.status_code == 200
+    assert "BLOCKED" in r.text and "test_x" in r.text and "assert 1 == 2" in r.text and "All tests pass" in r.text
