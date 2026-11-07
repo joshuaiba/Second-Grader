@@ -231,8 +231,8 @@ def _status_static() -> dict[str, Any]:
 providers: dict[str, Callable[..., Any]] = {
     "verdict": auto_verdict,
     "tamper": tamper_default,
-    "run": _run_not_wired,
-    "status": _status_static,
+    "run": None,     # filled below from web.runs (kept lazy so a broken runner never breaks import)
+    "status": None,
 }
 
 
@@ -444,7 +444,15 @@ async def api_run(request: Request) -> JSONResponse:
     data = await _form_or_json(request)
     task_id = data.get("task", "")
     mode = _normalise_mode(data.get("mode"))
-    result = dict(providers["run"](task_id, mode))
+    fn = providers["run"]
+    trace = data.get("trace") or None
+    if trace:
+        try:
+            result = dict(fn(task_id, mode, trace=trace))
+        except TypeError:  # a provider that only takes (task_id, mode)
+            result = dict(fn(task_id, mode))
+    else:
+        result = dict(fn(task_id, mode))
     status = int(result.pop("http_status", 200))
     return JSONResponse(result, status_code=status)
 
@@ -452,6 +460,20 @@ async def api_run(request: Request) -> JSONResponse:
 @app.get("/api/status")
 def api_status() -> dict[str, Any]:
     return providers["status"]()
+
+
+def _install_default_run_providers() -> None:
+    try:
+        from secondgrader.web.runs import manager
+    except Exception:  # pragma: no cover - only if the pipeline cannot import
+        providers["run"] = _run_not_wired
+        providers["status"] = _status_static
+        return
+    providers["run"] = manager.start
+    providers["status"] = manager.status
+
+
+_install_default_run_providers()
 
 
 @app.post("/api/tamper", response_class=HTMLResponse)

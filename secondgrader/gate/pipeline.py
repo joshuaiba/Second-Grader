@@ -153,7 +153,7 @@ def ground_truth(records: list[Record]) -> tuple[bool | None, int | None]:
     return None, None
 
 
-def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool, final_code: Path,
+def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool | None, final_code: Path,
                  append: Any | None, probes: list[str] | None = None, base_code: Path | None = None,
                  warn: WarnCallback | None = None) -> VerifierResult | None:
     try:
@@ -234,7 +234,7 @@ def run_trace(
     base_code: str | Path | None = None,
     work_dir: str | Path | None = None,
     branch: str | None = None,
-    offline: bool = False,
+    offline: bool | None = None,
     no_verify: bool = False,
     chain_results: bool = True,
     on_stage: StageCallback | None = None,
@@ -313,7 +313,7 @@ def run_trace(
     )
 
 
-def _from_run_result(res: Any, task: dict[str, Any], *, offline: bool, no_verify: bool,
+def _from_run_result(res: Any, task: dict[str, Any], *, offline: bool | None, no_verify: bool,
                      on_stage: StageCallback | None) -> PipelineResult:
     run_dir = Path(res.run_dir)
     out = run_trace(
@@ -325,7 +325,7 @@ def _from_run_result(res: Any, task: dict[str, Any], *, offline: bool, no_verify
     return out
 
 
-def run_live(task_id: str, *, time_limit: float = 600, offline: bool = False, no_verify: bool = False,
+def run_live(task_id: str, *, time_limit: float = 600, offline: bool | None = None, no_verify: bool = False,
              on_stage: StageCallback | None = None, agent_cmd: list[str] | None = None,
              traces: Path | None = None) -> PipelineResult:
     """P1 records a real run (Muse Code, or a scripted agent in tests), then the rest."""
@@ -343,7 +343,7 @@ def run_live(task_id: str, *, time_limit: float = 600, offline: bool = False, no
     return _from_run_result(res, task, offline=offline, no_verify=no_verify, on_stage=on_stage)
 
 
-def run_replay(task_id: str, *, offline: bool = False, no_verify: bool = False,
+def run_replay(task_id: str, *, offline: bool | None = None, no_verify: bool = False,
                on_stage: StageCallback | None = None, traces: Path | None = None) -> PipelineResult:
     """P1 re-plays a saved run of ``task_id`` (labelled REPLAY in its signed seal), then the rest."""
     from secondgrader.recorder import replay as replay_mod

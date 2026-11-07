@@ -349,3 +349,18 @@ def test_no_base_code_means_no_weak_flag(sample_records, final_code):
     result = blind.verify(SPEC, _diff(sample_records), observed(sample_records), client=FakeModel([GOOD_TEST]),
                           final_code_dir=final_code)
     assert all("weak" not in d for d in result.details)
+
+
+def test_spec_quoted_in_the_prompt_record_is_not_a_leak(sample_records, final_code):
+    # P1's runner records the task prompt as a CLAIMED record; the spec is allowed input, so no violation.
+    from secondgrader.schema import Record as R
+    spec = "parse_kv('  a =1') currently keeps the leading spaces in the key. Make it return {'a': '1'}."
+    prompt_rec = R(1, "t", "prompt", "CLAIMED", {"task_id": "honest_fix", "text": spec, "source": "runner"}, "p", "h", "UNSIGNED")
+    recs = [prompt_rec] + [r for r in sample_records if r.seq != 1]
+    result = blind.verify(spec, _diff(sample_records), observed(recs), client=FakeModel([GOOD_TEST]),
+                          final_code_dir=final_code, all_records=recs)
+    assert result.passed == 2
+    # ...but other agent text still is.
+    claim = next(r for r in recs if r.seq == FINAL_CLAIM_SEQ).payload["text"]
+    with pytest.raises(blind.BlindnessViolation):
+        blind.assert_blind("x " + claim, recs, allow=[spec])

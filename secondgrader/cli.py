@@ -111,12 +111,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             final_code = Path(args.final_code) if args.final_code else ROOT / task.get("repo", "demo_repo")
             base_code = Path(args.base_code) if args.base_code else None
             target = trace if args.no_write else pipeline.copy_trace_for_results(str(task["id"]), trace, Path(args.out_dir))
-            res = pipeline.run_trace(task, target, final_code=final_code, base_code=base_code, offline=args.offline,
+            res = pipeline.run_trace(task, target, final_code=final_code, base_code=base_code, offline=(True if args.offline else None),
                                      no_verify=args.no_verify, chain_results=not args.no_write, on_stage=on_stage)
         elif args.replay == "":
-            res = pipeline.run_replay(str(task["id"]), offline=args.offline, no_verify=args.no_verify, on_stage=on_stage)
+            res = pipeline.run_replay(str(task["id"]), offline=(True if args.offline else None), no_verify=args.no_verify, on_stage=on_stage)
         else:
-            res = pipeline.run_live(str(task["id"]), time_limit=args.time_limit, offline=args.offline,
+            res = pipeline.run_live(str(task["id"]), time_limit=args.time_limit, offline=(True if args.offline else None),
                                     no_verify=args.no_verify, on_stage=on_stage)
     except verifier.BlindnessViolation as exc:
         print(f"error: refusing to call the verifier, its input is not blind: {exc}", file=sys.stderr)

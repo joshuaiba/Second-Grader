@@ -472,7 +472,8 @@ def verify(
     """
     bi = build_blind_input(spec, diff, observed)
     blind_prompt = render_blind_prompt(bi, module_name)
-    assert_blind(blind_prompt, all_records or observed, diff)
+    # The spec is allowed input by definition, even though the runner's prompt record (CLAIMED) quotes it.
+    assert_blind(blind_prompt, all_records or observed, diff, allow=[bi.spec])
     blind_without_spec = blind_prompt.replace(bi.spec, "")
     for p in probes or []:
         if p.strip() and p.strip() in blind_without_spec:
@@ -486,7 +487,7 @@ def verify(
 
     if probes:
         probe_prompt = render_probe_prompt(bi, module_name, probes)
-        assert_blind(probe_prompt, all_records or observed, diff, allow=probes)
+        assert_blind(probe_prompt, all_records or observed, diff, allow=[bi.spec, *probes])
         d2, s2, _ = _phase(client, probe_prompt, phase="probe", final_code_dir=final_code_dir,
                            module_name=module_name, append=recorder_append, timeout=timeout, tag_prefix="probe",
                            base_code_dir=base)

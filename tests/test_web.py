@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from secondgrader import web
 from secondgrader.schema import Claim, ClaimVerdict, GateDecision, VerifierResult, load_trace
 
-from .conftest import ROOT, SAMPLE_TRACE, TAMPERED_TRACE, TEST_TAMPER_SEQ
+from .conftest import FIXTURES, ROOT, SAMPLE_TRACE, TAMPERED_TRACE, TEST_TAMPER_SEQ
 
 
 def test_render_verdict_shows_decision_claims_and_cited_seq():
@@ -224,7 +224,10 @@ def test_api_tasks_lists_four(client):
         assert t["title"] and t["expected_gate"] in {"PASS", "BLOCK"}
 
 
-def test_api_run_not_wired(client):
+def test_api_run_provider_hook_controls_status_code(client, monkeypatch):
+    from secondgrader.web import app as app_mod
+    monkeypatch.setitem(app_mod.providers, "run",
+                        lambda task_id, mode: {"status": "not wired", "task": task_id, "mode": mode, "http_status": 501})
     r = client.post("/api/run", json={"task": "honest_fix", "mode": "LIVE"})
     assert r.status_code == 501
     body = r.json()
@@ -232,12 +235,15 @@ def test_api_run_not_wired(client):
     assert body["task"] == "honest_fix" and body["mode"] == "LIVE"
 
 
-def test_api_status_static(client):
+def test_api_status_reports_the_run_manager(client, monkeypatch):
+    from secondgrader.web import app as app_mod
+    from secondgrader.web.runs import RunManager
+    monkeypatch.setitem(app_mod.providers, "status", RunManager().status)
     r = client.get("/api/status")
     assert r.status_code == 200
     body = r.json()
-    assert body["stage"] == "done"
-    assert isinstance(body["stages"], list) and body["stages"]
+    assert body["stage"] == "idle"
+    assert body["stages"] == ["record", "ground_truth", "audit", "verify", "gate", "done"]
 
 
 def test_api_tamper_turns_strip_red_from_seq(client):
@@ -555,3 +561,120 @@ def test_tamper_findings_severity_pills():
     assert web.split_severity("[HIGH] x") == ("high", "x")
     assert web.split_severity("plain") == (None, "plain")
     assert web.split_severity(None) == (None, "")
+
+
+
+# --------------------------------------------------------------------------- #
+# Run button: /api/run drives the pipeline in a thread, /api/status reports it
+# --------------------------------------------------------------------------- #
+
+from secondgrader.web import runs as _runs  # noqa: E402
+
+
+@pytest.fixture
+def fresh_manager(tmp_path, monkeypatch):
+    from secondgrader.web import app as app_mod
+    m = _runs.RunManager(traces=tmp_path / "traces")
+    monkeypatch.setitem(app_mod.providers, "run", m.start)
+    monkeypatch.setitem(app_mod.providers, "status", m.status)
+    monkeypatch.setenv("SG_SIGNING_KEY_PATH", str(tmp_path / "k.pem"))
+    # Runs land under tmp_path here (in production under <repo>/traces); let the page's path guard see them.
+    monkeypatch.setattr(app_mod, "REPO_ROOT", tmp_path)
+    return m
+
+
+def _client():
+    from fastapi.testclient import TestClient
+    from secondgrader.web.app import app
+    return TestClient(app)
+
+
+def test_run_button_on_a_fixture_trace_ends_in_a_redirect_to_its_verdict(fresh_manager):
+    c = _client()
+    r = c.post("/api/run", json={"task": "honest_fix", "mode": "LIVE", "trace": "fixtures/samples/honest.jsonl"})
+    assert r.status_code == 200 and r.json()["status"] == "started"
+    assert r.json()["mode"] == "REPLAY"  # judging an existing trace is never shown as LIVE
+    fresh_manager.wait(60)
+    s = c.get("/api/status").json()
+    assert s["stage"] == "done", s
+    assert s["decision"] == "PASS" and s["redirect"].startswith("/?trace=") and "mode=REPLAY" in s["redirect"]
+    page = c.get(s["redirect"])
+    assert page.status_code == 200 and "MERGED" in page.text and "REPLAY" in page.text
+
+
+def test_run_button_rejects_unknown_task_and_busy(fresh_manager, monkeypatch):
+    import threading
+    c = _client()
+    assert c.post("/api/run", json={"task": "nope", "mode": "REPLAY"}).status_code == 404
+    gate_evt = threading.Event()
+
+    def slow_replay(task_id, **kw):
+        gate_evt.wait(5)
+        raise RuntimeError("stopped")
+
+    monkeypatch.setattr(_runs.pipeline, "run_replay", slow_replay)
+    assert c.post("/api/run", json={"task": "honest_fix", "mode": "REPLAY"}).status_code == 200
+    assert c.post("/api/run", json={"task": "honest_fix", "mode": "REPLAY"}).status_code == 409
+    gate_evt.set()
+    fresh_manager.wait(10)
+    s = c.get("/api/status").json()
+    assert s["stage"] == "error" and "stopped" in s["detail"]
+
+
+def test_run_button_live_goes_through_the_pipeline(fresh_manager, monkeypatch):
+    from secondgrader.gate.pipeline import PipelineResult
+    from secondgrader.schema import GateDecision
+    seen = {}
+
+    def fake_live(task_id, **kw):
+        seen["task"] = task_id
+        kw["on_stage"]("gate", "deciding")
+        return PipelineResult(task_id=task_id, mode="LIVE", trace_path="fixtures/samples/honest.jsonl",
+                              decision=GateDecision("PASS"))
+
+    monkeypatch.setattr(_runs.pipeline, "run_live", fake_live)
+    c = _client()
+    assert c.post("/api/run", json={"task": "trap_partial_run", "mode": "LIVE"}).status_code == 200
+    fresh_manager.wait(10)
+    s = c.get("/api/status").json()
+    assert seen["task"] == "trap_partial_run" and s["stage"] == "done" and "mode=LIVE" in s["redirect"]
+
+
+
+# --------------------------------------------------------------------------- #
+# live provider on real-shaped traces and chained verdict records
+# --------------------------------------------------------------------------- #
+
+def _rec(seq, kind, payload):
+    return _Record(seq, "t", kind, "OBSERVED", payload, "p", "h", "UNSIGNED")
+
+
+def test_honest_sample_is_judged_on_evidence_not_the_fixture_story():
+    from secondgrader.schema import load_trace
+    recs = load_trace(FIXTURES / "samples" / "honest.jsonl")
+    decision, verdicts, vr, claims = live.auto_verdict(recs)
+    assert decision.decision == "PASS" and verdicts == [] and vr is None
+
+
+def test_stale_sample_blocks_on_ground_truth():
+    from secondgrader.schema import load_trace
+    recs = load_trace(FIXTURES / "samples" / "stale_tests.jsonl")
+    decision, *_ = live.auto_verdict(recs)
+    assert decision.decision == "BLOCK" and 19 in decision.citing_seqs
+
+
+def test_chained_gate_verdict_and_audit_records_are_shown_as_recorded(sample_records):
+    recs = sample_records + [
+        _rec(17, "verdict", {"stage": "audit", "claim_id": "c1", "status": "CONTRADICTED", "evidence_seqs": [10, 15],
+                             "reason": "subset only", "claim": {"id": "c1", "text": "All tests pass", "kind": "tests_pass", "source_seq": 16}}),
+        _rec(18, "verdict", {"stage": "audit", "claim_id": "tamper:tests/test_parser.py", "status": "UNSUPPORTED",
+                             "evidence_seqs": [13], "reason": "[low] expected value edited"}),
+        _rec(19, "verdict", {"stage": "audit_summary", "blocking": True}),
+        _rec(20, "verdict", {"decision": "BLOCK", "reasons": ["claim c1 is contradicted"], "citing_seqs": [10, 15],
+                             "chain_ok": True, "first_bad_seq": None}),
+    ]
+    decision, verdicts, vr, claims = live.auto_verdict(recs)
+    assert decision.decision == "BLOCK" and decision.reasons == ["claim c1 is contradicted"]
+    assert [v.claim_id for v in verdicts] == ["c1", "tamper:tests/test_parser.py"]
+    assert claims == [Claim("c1", "All tests pass", "tests_pass", 16)]
+    assert live.gate_verdict_from_records(recs)[1] == 20

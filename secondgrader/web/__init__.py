@@ -554,7 +554,7 @@ function sgRun(ev) {
       var b = res.body || {};
       msg.textContent = (b.status || ('HTTP ' + res.status)) + (b.message ? ': ' + b.message : '');
       if (res.ok && b.redirect) { window.location = b.redirect; }
-      else if (res.ok) { sgPollStatus(); }
+      else if (res.ok) { window.sgRunStarted = true; sgPollStatus(); }
     })
     .catch(function(e){ msg.textContent = 'run failed: ' + e; });
   return false;
@@ -567,8 +567,10 @@ function sgPollStatus() {
       var name = typeof st === 'string' ? st : st.name;
       return name === s.stage ? '[' + name + ']' : name;
     });
-    el.textContent = 'stage: ' + (s.stage || '?') + '   ' + parts.join(' > ');
-    if (s.stage !== 'done' && s.stage !== 'error') setTimeout(sgPollStatus, 1000);
+    var detail = s.detail ? ' (' + s.detail + ')' : '';
+    el.textContent = 'stage: ' + (s.stage || '?') + detail + '   ' + parts.join(' > ');
+    if (s.stage === 'done' && s.redirect && window.sgRunStarted) { window.location = s.redirect; return; }
+    if (s.stage !== 'done' && s.stage !== 'error' && s.stage !== 'idle') setTimeout(sgPollStatus, 1000);
   }).catch(function(){ el.textContent = 'stage: unavailable'; });
 }
 document.addEventListener('DOMContentLoaded', sgPollStatus);
