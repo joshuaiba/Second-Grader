@@ -382,12 +382,30 @@ def run_trace(
     if tmp_final is not None:
         tmp_final.cleanup()
     stage("done", decision.decision)
-    return PipelineResult(
+    result = PipelineResult(
         task_id=str(task.get("id", "")), mode=mode, trace_path=str(trace), decision=decision,
         claims=claims, verdicts=verdicts, verifier_result=vr, chain_ok=chain_ok, first_bad_seq=first_bad,
         chain_report=report, git_outcome=git_outcome, verdict_seq=verdict_seq,
         records=load_trace(trace), warnings=warnings,
     )
+    if chain_results:
+        # The page reads this when the trace itself could not take our records (unsealed fixtures),
+        # and it is the export Rahul's replay_check consumes. Written next to the judged copy.
+        write_result_sidecar(result)
+    return result
+
+
+def result_sidecar_path(trace_path: str | Path) -> Path:
+    p = Path(trace_path)
+    return p.with_name(p.name + ".result.json")
+
+
+def write_result_sidecar(result: PipelineResult) -> Path:
+    import json
+
+    out = result_sidecar_path(result.trace_path)
+    out.write_text(json.dumps(result.to_dict(), indent=1, default=str) + "\n", encoding="utf-8")
+    return out
 
 
 def _from_run_result(res: Any, task: dict[str, Any], *, offline: bool | None, no_verify: bool,
@@ -438,5 +456,5 @@ def run_replay(task_id: str, *, offline: bool | None = None, no_verify: bool = F
 __all__ = [
     "STAGES", "ChainAppender", "PipelineResult", "audit_records", "chain_status", "copy_trace_for_results",
     "final_diff", "full_diff", "ground_truth", "load_task", "materialize_final_code", "run_live", "run_replay",
-    "run_trace", "run_verifier", "task_spec",
+    "result_sidecar_path", "run_trace", "run_verifier", "task_spec", "write_result_sidecar",
 ]

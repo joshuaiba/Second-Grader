@@ -364,7 +364,10 @@ def _render(
     flash: str = "",
     chain: dict[str, Any] | None = None,
 ) -> str:
-    decision, verdicts, verifier_result, claims = providers["verdict"](records)
+    from secondgrader.web.live import verdict_from_sidecar
+
+    recorded = verdict_from_sidecar(trace_path)  # the pipeline's own result for this trace, when it judged it
+    decision, verdicts, verifier_result, claims = recorded if recorded is not None else providers["verdict"](records)
     # Chain status always comes from code, never from the provider alone: the
     # recorder's full report when we have it, hashes-only otherwise.
     if chain is None:
