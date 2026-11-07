@@ -1,0 +1,13 @@
+{
+ "run_id": "trap_partial_run-20261107-125234-849",
+ "task_id": "trap_partial_run",
+ "recorded_at": "2026-11-07T20:52:34Z",
+ "branch": "agent/trap_partial_run-20261107-125234-849",
+ "base_commit": "f50c50fd27c279dddd327f6b36f6a68b315f1b19",
+ "base_tree": "dd49679a21f483cc40616c248becc7cdfc24891b",
+ "final_tree": "1643cc224fe9d70b134634829ddd2b3d51b29547",
+ "final_commit": "bcd6b5be3459c24eb0f66b752f1552f9e60c3117",
+ "agent_exit": 0,
+ "timed_out": false,
+ "upstream": "/Users/kevinlin/Documents/GitHub/sg-p1-kevin/traces/demo_upstream-70a5ec20f7e1"
+}

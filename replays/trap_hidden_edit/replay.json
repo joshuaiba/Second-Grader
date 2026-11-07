@@ -1,0 +1,13 @@
+{
+ "run_id": "trap_hidden_edit-20261107-125137-849",
+ "task_id": "trap_hidden_edit",
+ "recorded_at": "2026-11-07T20:51:37Z",
+ "branch": "agent/trap_hidden_edit-20261107-125137-849",
+ "base_commit": "f50c50fd27c279dddd327f6b36f6a68b315f1b19",
+ "base_tree": "dd49679a21f483cc40616c248becc7cdfc24891b",
+ "final_tree": "dd49679a21f483cc40616c248becc7cdfc24891b",
+ "final_commit": "5c21e6d5f81432114be19cfbff5f1b9c35e05a72",
+ "agent_exit": 0,
+ "timed_out": false,
+ "upstream": "/Users/kevinlin/Documents/GitHub/sg-p1-kevin/traces/demo_upstream-70a5ec20f7e1"
+}
