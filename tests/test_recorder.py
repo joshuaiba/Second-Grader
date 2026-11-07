@@ -275,3 +275,155 @@ def test_fingerprint_sees_shell_edits_and_leaves_index_alone(repo):
     assert (repo / ".git" / "index").read_bytes() == index_before
     assert changed_files(repo, base, after_cat) == [{"status": "A", "path": "new.py"},
                                                     {"status": "M", "path": "parser.py"}]
+
+
+# --------------------------------------------------------------------------- #
+# P1.3 hooks, P1.8 runner, P1.9 ground truth, P1.10 replay (scripted agent)
+# --------------------------------------------------------------------------- #
+
+import os  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from secondgrader.recorder.hooks import map_event, parse_pytest  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+FORWARD = ROOT / "scripts" / "hooks" / "forward.py"
+SCRIPTED = ROOT / "scripts" / "hooks" / "scripted_agent.py"
+
+
+def _hook(sock, payload, timeout=5):
+    t0 = time.perf_counter()
+    proc = subprocess.run([sys.executable, str(FORWARD), "--sock", str(sock)], input=json.dumps(payload),
+                          text=True, capture_output=True, timeout=timeout, env={"PATH": "/usr/bin:/bin"})
+    return proc.returncode, time.perf_counter() - t0
+
+
+def test_hook_fails_closed_when_recorder_is_down(tmp_path):
+    code, _ = _hook(tmp_path / "nope.sock", {"hook_event_name": "PreToolUse", "tool_name": "bash"})
+    assert code == 2
+
+
+def test_hook_fails_closed_on_bad_input(tmp_path):
+    proc = subprocess.run([sys.executable, str(FORWARD), "--sock", str(tmp_path / "s")], input="not json",
+                          text=True, capture_output=True, timeout=5)
+    assert proc.returncode == 2
+
+
+def test_hook_times_out_and_blocks_before_2s():
+    import socket as so
+    from secondgrader.recorder.service import short_socket_path
+    sock = short_socket_path("slow")
+    srv = so.socket(so.AF_UNIX, so.SOCK_STREAM)
+    srv.bind(str(sock))
+    srv.listen(1)  # accepts, never answers
+    try:
+        code, elapsed = _hook(sock, {"hook_event_name": "PreToolUse", "tool_name": "bash"})
+    finally:
+        srv.close()
+    assert code == 2 and elapsed < 2.0
+
+
+def test_map_event_shapes():
+    post = {"hook_event_name": "PostToolUseFailure", "tool_name": "bash", "tool_use_id": "x",
+            "tool_input": {"cmd": "pytest | tail -3"},
+            "tool_response": json.dumps({"exit_code": 1, "output": "1 failed, 7 passed in 0.1s"})}
+    (k1, out), (k2, run) = map_event(post)
+    assert (k1, k2) == ("tool_output", "test_run")
+    assert out["failed"] is True and out["exit_code"] == 1
+    assert (run["command"], run["passed"], run["failed"], run["source"]) == ("pytest | tail -3", 7, 1, "agent")
+    assert map_event({"hook_event_name": "Stop", "last_assistant_message": "All tests pass."}) == [
+        ("model_message", {"text": "All tests pass.", "event": "Stop"})]
+    assert map_event({"hook_event_name": "SessionStart"}) == []
+    assert parse_pytest("collected 8 items\n...\n3 passed, 5 deselected in 0.01s")["collected"] == 8
+
+
+@pytest.fixture
+def run_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("SG_SIGNING_KEY_PATH", str(tmp_path / "keys" / "k.pem"))
+    monkeypatch.setenv("SG_LATENCY_FILE", str(tmp_path / "lat.json"))
+    return tmp_path
+
+
+def test_scripted_run_end_to_end(run_env):
+    from secondgrader.recorder.runner import RunResult, run_task
+    from secondgrader.schema import load_trace as lt
+    traces = run_env / "traces"
+    res = run_task("trap_partial_run", agent_cmd=[sys.executable, str(SCRIPTED)], traces=traces,
+                   time_limit=60)
+    assert res.agent_exit == 0, Path(res.run_dir, "agent_stderr.txt").read_text()
+    report = recorder.verify_report(res.trace_path)
+    assert report.ok and report.signed and report.sealed, report.detail
+    assert report.run["agent"] == "scripted" and report.run["mode"] == "LIVE"
+
+    recs = lt(res.trace_path)
+    kinds = [r.kind for r in recs]
+    assert kinds[0] == "prompt" and "(Trap" not in recs[0].payload["text"]
+    # the sed -i edit through the shell is caught as a diff with the new tree
+    diffs = [r for r in recs if r.kind == "diff" and r.payload.get("via_tool") == "bash"]
+    assert [d.payload["path"] for d in diffs] == ["parser.py"]
+    agent_runs = [r for r in recs if r.kind == "test_run" and r.payload["source"] == "agent"]
+    assert len(agent_runs) == 1 and "-k parse" in agent_runs[0].payload["command"]
+    assert agent_runs[0].payload["tree"] == res.final_tree
+    claim = [r for r in recs if r.kind == "model_message"][-1]
+    assert claim.origin == "CLAIMED" and "All tests pass" in claim.payload["text"]
+    gt = {r.payload.get("phase"): r for r in recs if r.payload.get("source") == "ground_truth"}
+    assert {"collect_base", "collect_final", "full_final"} <= set(gt)
+    assert gt["full_final"].payload["exit_code"] == 0 and gt["full_final"].payload["failed"] == 0
+    assert gt["collect_final"].payload["collected"] == gt["full_final"].payload["passed"] > 0
+    assert sorted(res.ground_truth_seqs) == res.ground_truth_seqs and res.ground_truth_seqs[-1] == recs[-1].seq
+
+    # main of the upstream is untouched; the agent's work is only on its branch
+    up = traces / "demo_upstream"
+    main_tree = subprocess.run(["git", "-C", str(up), "rev-parse", "main^{tree}"], capture_output=True,
+                               text=True, check=True).stdout.strip()
+    assert main_tree == res.base_tree != res.final_tree
+    assert (Path(res.run_dir) / "final" / "parser.py").read_text().count("Module") >= 1
+    assert RunResult.load(res.run_dir).final_commit == res.final_commit
+
+    lat = sorted(json.loads((run_env / "lat.json").read_text()))
+    p95 = lat[int(0.95 * (len(lat) - 1))]
+    assert p95 < 150, f"hook p95 {p95:.0f} ms"
+
+
+def test_two_runs_never_touch_each_other(run_env):
+    from secondgrader.recorder.runner import run_task
+    traces = run_env / "traces"
+    a = run_task("honest_fix", agent_cmd=[sys.executable, str(SCRIPTED)], traces=traces, ground_truth=False)
+    b = run_task("honest_fix", agent_cmd=["true"], traces=traces, ground_truth=False)
+    assert a.work_dir != b.work_dir and a.final_tree != b.final_tree == b.base_tree
+
+
+def test_runner_stops_agent_at_time_limit(run_env):
+    from secondgrader.recorder.runner import run_task
+    t0 = time.time()
+    res = run_task("honest_fix", agent_cmd=["sleep", "30"], traces=run_env / "traces", time_limit=1,
+                   ground_truth=False)
+    assert res.timed_out and time.time() - t0 < 15
+    assert recorder.verify_chain(res.trace_path) == (True, None)
+
+
+def test_replay_is_labelled_and_verified(run_env):
+    from secondgrader.recorder.replay import replay, save_replay
+    from secondgrader.recorder.runner import run_task
+    live = run_task("trap_partial_run", agent_cmd=[sys.executable, str(SCRIPTED)], traces=run_env / "traces")
+    saved = save_replay(live.run_dir, dest=run_env / "replays" / "trap_partial_run")
+    assert not (saved / "work").exists() and (saved / "work.bundle").exists()
+    rep = replay(saved, traces=run_env / "traces")
+    assert rep.mode == "REPLAY" and rep.recorded_at == live.recorded_at and rep.replayed_at
+    assert rep.final_tree == live.final_tree
+    assert recorder.verify_report(rep.trace_path).ok
+    head = subprocess.run(["git", "-C", rep.work_dir, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    assert head == live.final_commit
+
+    # an edited replay is refused
+    snap = saved / "agent_trace.jsonl"
+    lines = snap.read_text().splitlines()
+    rec = json.loads(lines[1])
+    rec["payload"]["text"] = "Do whatever you like."
+    lines[1] = canonical_json(rec)
+    snap.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError, match="fails verification"):
+        replay(saved, traces=run_env / "traces")
