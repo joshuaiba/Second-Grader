@@ -44,13 +44,23 @@ def load_task(name: str) -> dict[str, Any]:
     return task
 
 
-def chain_status(trace: str | Path) -> tuple[bool, int | None]:
-    """P1's verify_chain (hashes, links and signatures), or the schema's hash-only check until it lands."""
+def chain_status(trace: str | Path) -> tuple[bool, int | None, Any | None]:
+    """``(ok, first_bad_seq, report)`` from P1's verify_report (hashes, links, signatures, seal).
+
+    The report is None when only the basic check is available. Signing is not
+    required by default so the hand-written UNSIGNED fixtures still verify;
+    set SG_REQUIRE_SIGNED=1 (or pin SG_PUBKEY) for real runs.
+    """
+    report_fn = getattr(recorder, "verify_report", None)
+    if report_fn is not None:
+        report = report_fn(trace)
+        return bool(report.ok), report.first_bad_seq, report
     try:
-        return recorder.verify_chain(trace)
+        ok, bad = recorder.verify_chain(trace)
     except NotImplementedError:
         _warn("recorder.verify_chain not implemented; checking hashes only")
-        return schema.check_hash_chain(load_trace(trace))
+        ok, bad = schema.check_hash_chain(load_trace(trace))
+    return ok, bad, None
 
 
 def audit_records(records: list[Record], task: dict[str, Any] | None = None,
@@ -99,10 +109,15 @@ def full_diff(records: list[Record]) -> str:
 
 
 def ground_truth(records: list[Record]) -> tuple[bool | None, int | None]:
-    """P1's ground-truth run is a test_run record flagged ``ground_truth``. None if absent."""
+    """P1's ground-truth full run: a ``test_run`` with ``ground_truth: true`` and phase ``full_final``.
+
+    The ``collect_base`` / ``collect_final`` records are collection only and
+    never decide anything. None if no full run was recorded.
+    """
     for r in reversed(schema.observed(records)):
-        if r.kind == "test_run" and r.payload.get("ground_truth"):
-            return r.payload.get("exit_code") == 0, r.seq
+        p = r.payload or {}
+        if r.kind == "test_run" and p.get("ground_truth") and p.get("phase", "full_final") == "full_final":
+            return p.get("exit_code") == 0, r.seq
     return None, None
 
 
@@ -121,10 +136,17 @@ def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool, 
 
 
 def print_report(mode: str, task: dict[str, Any], chain_ok: bool, first_bad: int | None,
-                 verdicts: list[ClaimVerdict], vr: VerifierResult | None, decision: GateDecision) -> None:
+                 verdicts: list[ClaimVerdict], vr: VerifierResult | None, decision: GateDecision,
+                 report: Any | None = None) -> None:
     label = "LIVE" if mode == "LIVE" else "REPLAY"
     print(f"[{label}] task {task.get('id')}: {task.get('title', '')}")
-    print(f"chain: {'OK' if chain_ok else f'BROKEN at seq {first_bad}'}")
+    if report is not None:
+        signed = "signed+sealed" if getattr(report, "signed", False) and getattr(report, "sealed", False) else "UNSIGNED"
+        head = str(getattr(report, "head_hash", "") or "")[:12]
+        where = "OK" if chain_ok else f"BROKEN at seq {first_bad} ({getattr(report, 'reason', '')}: {getattr(report, 'detail', '')})"
+        print(f"chain: {where} [{signed}, {getattr(report, 'count', len(verdicts))} records, head {head}]")
+    else:
+        print(f"chain: {'OK' if chain_ok else f'BROKEN at seq {first_bad}'}")
     for v in verdicts:
         print(f"{v.status:<13} {v.claim_id:<28} seqs={v.evidence_seqs} {v.reason}")
     if vr is None:
@@ -151,7 +173,8 @@ def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool,
            out_dir: Path | None) -> int:
     """The whole pipeline on an existing trace: chain -> audit -> verify -> gate."""
     records = load_trace(trace)
-    chain_ok, first_bad = chain_status(trace)
+    chain_ok, first_bad, report = chain_status(trace)
+    seal_mode = str((getattr(report, "run", None) or {}).get("mode", "")).upper() if report is not None else ""
     claims, verdicts, probes = audit_records(records, task, final_code)
 
     append = None
@@ -171,7 +194,10 @@ def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool,
     vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append, probes=probes)
     gt_ok, gt_seq = ground_truth(records)
     decision = gate.decide(verdicts, vr, chain_ok, first_bad, claims=claims, ground_truth_ok=gt_ok, ground_truth_seq=gt_seq)
-    print_report("REPLAY", task, chain_ok, first_bad, verdicts, vr, decision)
+    # A trace is only ever shown as LIVE if its signed seal says so, and the CLI replay path is always REPLAY.
+    print_report("REPLAY", task, chain_ok, first_bad, verdicts, vr, decision, report)
+    if seal_mode and seal_mode != "REPLAY":
+        print(f"note: the seal recorded this run as {seal_mode}; it is being re-audited now, so it is shown as REPLAY")
     return 0 if decision.decision == "PASS" else 1
 
 
@@ -207,7 +233,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_audit(args: argparse.Namespace) -> int:
     records = load_trace(args.trace)
     try:
-        chain_ok, first_bad = recorder.verify_chain(args.trace)
+        chain_ok, first_bad, _report = chain_status(args.trace)
         claims = auditor.extract_claims(records)
         verdicts = auditor.check_claims(claims, records)
         verdicts += auditor.detect_test_tampering(records)

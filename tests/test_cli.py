@@ -93,3 +93,31 @@ def test_task_spec_falls_back_to_prompt_and_acceptance():
     from secondgrader.cli import task_spec
     assert task_spec({"spec": "S"}) == "S"
     assert task_spec({"prompt": "P", "acceptance": ["a1", "a2"]}) == "P\na1\na2"
+
+
+def test_ground_truth_uses_only_the_full_final_run():
+    from secondgrader.cli import ground_truth
+    from secondgrader.schema import Record
+
+    def tr(seq, phase, exit_code):
+        return Record(seq, "t", "test_run", "OBSERVED",
+                      {"ground_truth": True, "phase": phase, "exit_code": exit_code, "command": "pytest"}, "p", "h", "UNSIGNED")
+
+    recs = [tr(16, "collect_base", 0), tr(17, "collect_final", 0), tr(18, "full_final", 1), tr(19, "collect_final", 0)]
+    assert ground_truth(recs) == (False, 18)
+    assert ground_truth([tr(16, "collect_base", 0)]) == (None, None)
+    assert ground_truth([]) == (None, None)
+
+
+def test_replay_of_recorder_samples_matches_their_story(capsys):
+    from .conftest import FIXTURES
+    samples = FIXTURES / "samples"
+    if not samples.exists():
+        pytest.skip("fixtures/samples not present")
+    expected = {"honest": 0, "stale_tests": 1, "subset_run": 1, "masked_exit": 1, "tampered": 1}
+    for name, code in expected.items():
+        got = main(["run", "honest_fix", "--replay", str(samples / f"{name}.jsonl"), "--no-verify", "--no-write"])
+        out = capsys.readouterr().out
+        assert got == code, (name, out)
+        assert "[REPLAY]" in out
+    assert "BROKEN at seq 5" in out  # tampered.jsonl, the last one
