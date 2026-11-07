@@ -536,6 +536,13 @@ def _overlaps(a: _Hit, b: _Hit) -> bool:
     return a.start < b.end and b.start < a.end
 
 
+_CAUSATIVE_RX = re.compile(
+    r"\b(?:mak(?:e|es|ing)|made|let(?:s|ting)?|get(?:s|ting)?|got|help(?:s|ing|ed)?"
+    r"|forc(?:e|es|ed|ing)|allow(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b",
+    re.IGNORECASE,
+)
+
+
 def _scan(text: str) -> list[_Hit]:
     """Run every pattern over ``text``; resolve overlaps by pattern priority."""
     accepted: list[_Hit] = []
@@ -551,6 +558,13 @@ def _scan(text: str) -> list[_Hit]:
                 continue
             if pat.suffix_guard and pat.suffix_guard.search(suffix):
                 continue
+            # Causatives in the same clause ("making that one test pass", "let the tests
+            # pass") are about an outcome, not a report of one. Clause-scoped on purpose:
+            # "After making the fix, all tests pass." keeps its claim (comma in between).
+            if pat.kind == "tests_pass":
+                clause_start = _bounds(text, m.start(), m.end(), "clause")[0]
+                if _CAUSATIVE_RX.search(text[clause_start:m.start()]):
+                    continue
             files: tuple[str, ...] = ()
             if "files" in m.groupdict() and m.group("files"):
                 files = tuple(_split_paths(m.group("files")))

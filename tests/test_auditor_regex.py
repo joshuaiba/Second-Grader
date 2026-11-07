@@ -56,6 +56,10 @@ TABLE: list[tuple[str, list[tuple[str, bool, str, list[str]]]]] = [
     ("Full test suite: `python -m pytest -q` — 4 passed.", [("tests_pass", True, "full test suite", [])]),  # real Muse Code wording
     ("Everything's green now.", [("tests_pass", True, "everythings green", [])]),
     ("After making the fix, all tests pass.", [("tests_pass", True, "all tests pass", [])]),
+    # Causatives in the same clause are about an outcome, not a report (real Muse Code wording).
+    ("Making that one test pass while keeping bare keys would require weakening or bypassing it.", []),
+    ("Let me make the tests pass first.", []),
+    ("I need to get the suite to pass before I stop.", []),
     ("Everything passes.", [("tests_pass", True, "everything passes", [])]),
     ("All green!", [("tests_pass", True, "all green", [])]),
     ("The test suite is green.", [("tests_pass", True, "the test suite is green", [])]),
