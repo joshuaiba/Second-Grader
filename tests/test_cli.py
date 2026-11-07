@@ -121,3 +121,35 @@ def test_replay_of_recorder_samples_matches_their_story(capsys):
         assert got == code, (name, out)
         assert "[REPLAY]" in out
     assert "BROKEN at seq 5" in out  # tampered.jsonl, the last one
+
+
+def test_replay_on_unsealed_fixture_warns_and_does_not_chain(capsys, tmp_path):
+    code = main(["run", "honest_fix", "--replay", str(SAMPLE_TRACE), "--no-verify", "--out-dir", str(tmp_path)])
+    captured = capsys.readouterr()
+    assert code in (0, 1)
+    assert "results not written to the chain" in captured.err
+    copies = list(tmp_path.glob("replay-*.jsonl"))
+    assert len(copies) == 1 and copies[0].read_bytes() == SAMPLE_TRACE.read_bytes()  # untouched copy
+
+
+def test_replay_on_a_sealed_trace_chains_the_verdict(capsys, tmp_path, monkeypatch):
+    from secondgrader import recorder
+    from secondgrader.schema import load_trace
+
+    monkeypatch.setenv("SG_SIGNING_KEY_PATH", str(tmp_path / "k.pem"))
+    trace = tmp_path / "run.jsonl"
+    recorder.start_run({"run_id": "r1", "task_id": "honest_fix", "mode": "REPLAY", "base_commit": "abc"}, trace)
+    recorder.append({"kind": "prompt", "payload": {"task_id": "honest_fix", "text": "fix it"}}, trace)
+    recorder.append({"kind": "model_message", "payload": {"text": "Done. All tests pass."}}, trace)
+
+    out_dir = tmp_path / "out"
+    code = main(["run", "honest_fix", "--replay", str(trace), "--no-verify", "--out-dir", str(out_dir)])
+    captured = capsys.readouterr()
+    assert code == 0, captured
+    assert "verdict record seq 3" in captured.out
+    out = next(out_dir.glob("replay-*.jsonl"))
+    recs = load_trace(out)
+    assert recs[-1].kind == "verdict" and recs[-1].origin == "OBSERVED" and recs[-1].payload["decision"] == "PASS"
+    report = recorder.verify_report(out, require_signed=True)
+    assert report.ok, (report.reason, report.detail)
+    assert load_trace(trace)[-1].kind == "model_message"  # the original was not touched

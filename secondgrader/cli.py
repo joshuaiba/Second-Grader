@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +170,49 @@ def print_report(mode: str, task: dict[str, Any], chain_ok: bool, first_bad: int
         print(f"expected for demo: {expected} -> {'as expected' if expected == decision.decision else 'MISMATCH'}")
 
 
+def _copy_trace_for_results(task: dict[str, Any], trace: Path, out_dir: Path) -> Path:
+    """Copy the trace (and its seal, if any) under ``out_dir`` so results can be chained onto it."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"replay-{task.get('id')}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.jsonl"
+    out.write_bytes(trace.read_bytes())
+    seal_path = getattr(recorder, "seal_path", None)
+    if seal_path is not None:
+        src_seal = Path(seal_path(trace))
+        if src_seal.exists():
+            Path(seal_path(out)).write_bytes(src_seal.read_bytes())
+    return out
+
+
+class _ChainAppender:
+    """``recorder.append`` bound to one trace copy; goes quiet after the first refusal.
+
+    The recorder refuses to append to an unsealed trace (hand-written fixtures)
+    or one sealed by another key. That is correct, and it must not stop the
+    audit: results are then only printed, not chained, and we say so once.
+    """
+
+    def __init__(self, out: Path) -> None:
+        self.out = out
+        self.disabled = False
+        self.written: list[int] = []
+
+    def __call__(self, fields: dict[str, Any]) -> Any | None:
+        if self.disabled:
+            return None
+        try:
+            rec = recorder.append(fields, self.out)
+        except NotImplementedError:
+            self.disabled = True
+            _warn("recorder.append not implemented; results are not written to the chain")
+            return None
+        except RuntimeError as exc:
+            self.disabled = True
+            _warn(f"results not written to the chain: {exc}")
+            return None
+        self.written.append(rec.seq)
+        return rec
+
+
 def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool, final_code: Path,
            out_dir: Path | None) -> int:
     """The whole pipeline on an existing trace: chain -> audit -> verify -> gate."""
@@ -178,22 +222,18 @@ def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool,
     claims, verdicts, probes = audit_records(records, task, final_code)
 
     append = None
-    if not no_verify and out_dir is not None:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"replay-{task.get('id')}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.jsonl"
-        out.write_bytes(Path(trace).read_bytes())
-        try:
-            recorder.append({"kind": "verifier_test", "origin": "OBSERVED", "payload": {"probe": True}}, out)
-            out.write_bytes(Path(trace).read_bytes())  # probe worked; start clean
-            append = lambda fields: recorder.append(fields, out)  # noqa: E731
-            print(f"verifier records -> {out}")
-        except NotImplementedError:
-            _warn("recorder.append not implemented; verifier results are not written to the chain")
-            out.unlink(missing_ok=True)
+    out: Path | None = None
+    if out_dir is not None:
+        out = _copy_trace_for_results(task, Path(trace), out_dir)
+        append = _ChainAppender(out)
 
     vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append, probes=probes)
     gt_ok, gt_seq = ground_truth(records)
     decision = gate.decide(verdicts, vr, chain_ok, first_bad, claims=claims, ground_truth_ok=gt_ok, ground_truth_seq=gt_seq)
+    if append is not None:
+        rec = append({"kind": "verdict", "origin": "OBSERVED", "payload": asdict(decision)})
+        if rec is not None:
+            print(f"verdict record seq {rec.seq} -> {out}")
     # A trace is only ever shown as LIVE if its signed seal says so, and the CLI replay path is always REPLAY.
     print_report("REPLAY", task, chain_ok, first_bad, verdicts, vr, decision, report)
     if seal_mode and seal_mode != "REPLAY":
