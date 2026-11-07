@@ -1,9 +1,10 @@
 """Command-line entry point (P3, Josh).
 
-    secondgrader run <task>                       run Muse Code on tasks/<task>.yaml, record, audit, verify, gate
-    secondgrader run <task> --replay trace.jsonl  re-audit a recorded trace, labelled REPLAY, same pipeline
-    secondgrader audit <trace.jsonl>              extract + check claims on an existing trace, print verdicts
-    secondgrader verify-chain <trace.jsonl>       verify hashes and signatures
+    secondgrader run <task>                       live: P1 runs Muse Code, then audit, verify, gate
+    secondgrader run <task> --replay              re-play P1's saved run of <task>, labelled REPLAY
+    secondgrader run <task> --replay trace.jsonl  the pipeline on any trace file (fixtures)
+    secondgrader audit <trace.jsonl>              extract + check claims on an existing trace
+    secondgrader verify-chain <trace.jsonl>       verify hashes, links, signatures and seal
 
 Code decides every verdict here. The only LLM call is inside the verifier,
 and it only writes tests.
@@ -13,17 +14,27 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from secondgrader import auditor, gate, recorder, schema, verifier
-from secondgrader.schema import Claim, ClaimVerdict, GateDecision, Record, VerifierResult, load_trace
+from secondgrader import auditor, gate, recorder, verifier
+from secondgrader.gate import pipeline
+from secondgrader.gate.pipeline import (  # re-exported for tests and other callers
+    PipelineResult,
+    audit_records,
+    chain_status,
+    full_diff,
+    ground_truth,
+    load_task,
+    run_verifier,
+    task_spec,
+)
+from secondgrader.schema import load_trace
 
 ROOT = Path(__file__).resolve().parents[1]
+
+__all__ = ["audit_records", "build_parser", "chain_status", "full_diff", "ground_truth", "load_task", "main",
+           "run_verifier", "task_spec"]
 
 
 def _not_implemented(exc: NotImplementedError) -> int:
@@ -35,213 +46,51 @@ def _warn(msg: str) -> None:
     print(f"warning: {msg}", file=sys.stderr)
 
 
-def load_task(name: str) -> dict[str, Any]:
-    path = Path(name) if name.endswith((".yaml", ".yml")) else ROOT / "tasks" / f"{name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(path)
-    with open(path, encoding="utf-8") as fh:
-        task = yaml.safe_load(fh) or {}
-    task.setdefault("id", path.stem)
-    return task
+def _stage(name: str, detail: str) -> None:
+    print(f"[stage] {name}: {detail}", file=sys.stderr)
 
 
-def chain_status(trace: str | Path) -> tuple[bool, int | None, Any | None]:
-    """``(ok, first_bad_seq, report)`` from P1's verify_report (hashes, links, signatures, seal).
-
-    The report is None when only the basic check is available. Signing is not
-    required by default so the hand-written UNSIGNED fixtures still verify;
-    set SG_REQUIRE_SIGNED=1 (or pin SG_PUBKEY) for real runs.
-    """
-    report_fn = getattr(recorder, "verify_report", None)
-    if report_fn is not None:
-        report = report_fn(trace)
-        return bool(report.ok), report.first_bad_seq, report
-    try:
-        ok, bad = recorder.verify_chain(trace)
-    except NotImplementedError:
-        _warn("recorder.verify_chain not implemented; checking hashes only")
-        ok, bad = schema.check_hash_chain(load_trace(trace))
-    return ok, bad, None
-
-
-def audit_records(records: list[Record], task: dict[str, Any] | None = None,
-                  final_code: Path | None = None) -> tuple[list[Claim], list[ClaimVerdict], list[str]]:
-    """P2's auditor: ``(claims, verdicts, probe obligations)``.
-
-    Prefers ``auditor.audit(...)`` (full report with tamper findings and probes)
-    when P2 ships it, else the three basic functions. Until either lands: no
-    claims, no verdicts, no probes. Never a verdict from guesswork.
-    """
-    audit = getattr(auditor, "audit", None)
-    if audit is not None:
-        try:
-            report = audit(records, task=task, final_dir=final_code)
-            probes = [getattr(p, "text", p) for p in (getattr(report, "probes", None) or [])]
-            return list(getattr(report, "claims", [])), list(getattr(report, "verdicts", [])), [str(p) for p in probes]
-        except NotImplementedError as exc:
-            _warn(f"auditor.audit not implemented ({exc}); trying the basic functions")
-        except TypeError as exc:
-            _warn(f"auditor.audit signature mismatch ({exc}); trying the basic functions")
-    try:
-        claims = auditor.extract_claims(records)
-        verdicts = auditor.check_claims(claims, records)
-        verdicts += auditor.detect_test_tampering(records)
-    except NotImplementedError as exc:
-        _warn(f"auditor not implemented ({exc}); no claim verdicts")
-        return [], [], []
-    return claims, verdicts, []
-
-
-def task_spec(task: dict[str, Any]) -> str:
-    """The text the verifier gets: ``spec``, or P2's ``prompt`` plus ``acceptance`` sentences."""
-    spec = str(task.get("spec") or "").strip()
-    if spec:
-        return spec
-    parts = [str(task.get("prompt") or "").strip()]
-    acceptance = task.get("acceptance") or []
-    if isinstance(acceptance, str):
-        acceptance = [acceptance]
-    parts += [str(a).strip() for a in acceptance]
-    return "\n".join(x for x in parts if x)
-
-
-def full_diff(records: list[Record]) -> str:
-    return "".join(str(r.payload.get("diff", "")) for r in schema.observed(records) if r.kind == "diff")
-
-
-def ground_truth(records: list[Record]) -> tuple[bool | None, int | None]:
-    """P1's ground-truth full run: a ``test_run`` with ``ground_truth: true`` and phase ``full_final``.
-
-    The ``collect_base`` / ``collect_final`` records are collection only and
-    never decide anything. None if no full run was recorded.
-    """
-    for r in reversed(schema.observed(records)):
-        p = r.payload or {}
-        if r.kind == "test_run" and p.get("ground_truth") and p.get("phase", "full_final") == "full_final":
-            return p.get("exit_code") == 0, r.seq
-    return None, None
-
-
-def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool, final_code: Path,
-                 append: Any | None, probes: list[str] | None = None,
-                 base_code: Path | None = None) -> VerifierResult | None:
-    try:
-        client = verifier.GeminiClient(offline=offline)
-        return verifier.verify(
-            task_spec(task), full_diff(records), schema.observed(records),
-            final_code_dir=final_code, all_records=records, recorder_append=append, client=client,
-            probes=probes or None, base_code_dir=base_code,
-        )
-    except (verifier.MissingApiKey, verifier.OfflineCacheMiss) as exc:
-        _warn(f"verifier skipped: {exc}")
-        return None
-
-
-def print_report(mode: str, task: dict[str, Any], chain_ok: bool, first_bad: int | None,
-                 verdicts: list[ClaimVerdict], vr: VerifierResult | None, decision: GateDecision,
-                 report: Any | None = None) -> None:
-    label = "LIVE" if mode == "LIVE" else "REPLAY"
-    print(f"[{label}] task {task.get('id')}: {task.get('title', '')}")
-    if report is not None:
-        signed = "signed+sealed" if getattr(report, "signed", False) and getattr(report, "sealed", False) else "UNSIGNED"
-        head = str(getattr(report, "head_hash", "") or "")[:12]
-        where = "OK" if chain_ok else f"BROKEN at seq {first_bad} ({getattr(report, 'reason', '')}: {getattr(report, 'detail', '')})"
-        print(f"chain: {where} [{signed}, {getattr(report, 'count', len(verdicts))} records, head {head}]")
+def print_report(res: PipelineResult, task: dict[str, Any]) -> None:
+    for w in res.warnings:
+        _warn(w)
+    print(f"[{res.mode}] task {res.task_id}: {task.get('title', '')}")
+    r = res.chain_report
+    if r is not None:
+        signed = "signed+sealed" if getattr(r, "signed", False) and getattr(r, "sealed", False) else "UNSIGNED"
+        head = str(getattr(r, "head_hash", "") or "")[:12]
+        where = "OK" if res.chain_ok else f"BROKEN at seq {res.first_bad_seq} ({getattr(r, 'reason', '')}: {getattr(r, 'detail', '')})"
+        print(f"chain: {where} [{signed}, {getattr(r, 'count', len(res.records))} records, head {head}]")
     else:
-        print(f"chain: {'OK' if chain_ok else f'BROKEN at seq {first_bad}'}")
-    for v in verdicts:
+        print(f"chain: {'OK' if res.chain_ok else f'BROKEN at seq {res.first_bad_seq}'}")
+    for v in res.verdicts:
         print(f"{v.status:<13} {v.claim_id:<28} seqs={v.evidence_seqs} {v.reason}")
+    vr = res.verifier_result
     if vr is None:
         print("verifier: skipped")
     else:
         errored = len(vr.details) - vr.passed - vr.failed
         print(f"verifier: {vr.passed} passed, {vr.failed} failed, {errored} errored (seqs={vr.record_seqs})")
         if vr.passed + vr.failed == 0:
-            print("verifier: NO COUNTABLE TESTS (generation rejected or every test errored); this does not block, but nothing was independently verified")
+            print("verifier: NO COUNTABLE TESTS (generation rejected or every test errored); "
+                  "this does not block, but nothing was independently verified")
         for d in vr.details:
             weak = "  [weak: also passes on base code]" if d.get("weak") else ""
             print(f"  {d.get('outcome', '?'):<7} {d.get('name')}  {d.get('spec_sentence', '')}{weak}")
-    stamp = "MERGED" if decision.decision == "PASS" else "BLOCKED"
-    print(f"\n{decision.decision} ({stamp})")
-    for r in decision.reasons:
-        print(f"  - {r}")
-    if decision.citing_seqs:
-        print(f"  cited records: {decision.citing_seqs}")
-    expected = task.get("expected_gate")
+    d = res.decision
+    stamp = "MERGED" if d.decision == "PASS" else "BLOCKED"
+    print(f"\n{d.decision} ({stamp})")
+    for reason in d.reasons:
+        print(f"  - {reason}")
+    if d.citing_seqs:
+        print(f"  cited records: {d.citing_seqs}")
+    if res.verdict_seq is not None:
+        print(f"verdict record seq {res.verdict_seq} -> {res.trace_path}")
+    if res.git_outcome:
+        print(f"git: {res.git_outcome}")
+    expected = task.get("expected_gate") or task.get("expected_verdict")
     if expected:
-        print(f"expected for demo: {expected} -> {'as expected' if expected == decision.decision else 'MISMATCH'}")
-
-
-def _copy_trace_for_results(task: dict[str, Any], trace: Path, out_dir: Path) -> Path:
-    """Copy the trace (and its seal, if any) under ``out_dir`` so results can be chained onto it."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"replay-{task.get('id')}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.jsonl"
-    out.write_bytes(trace.read_bytes())
-    seal_path = getattr(recorder, "seal_path", None)
-    if seal_path is not None:
-        src_seal = Path(seal_path(trace))
-        if src_seal.exists():
-            Path(seal_path(out)).write_bytes(src_seal.read_bytes())
-    return out
-
-
-class _ChainAppender:
-    """``recorder.append`` bound to one trace copy; goes quiet after the first refusal.
-
-    The recorder refuses to append to an unsealed trace (hand-written fixtures)
-    or one sealed by another key. That is correct, and it must not stop the
-    audit: results are then only printed, not chained, and we say so once.
-    """
-
-    def __init__(self, out: Path) -> None:
-        self.out = out
-        self.disabled = False
-        self.written: list[int] = []
-
-    def __call__(self, fields: dict[str, Any]) -> Any | None:
-        if self.disabled:
-            return None
-        try:
-            rec = recorder.append(fields, self.out)
-        except NotImplementedError:
-            self.disabled = True
-            _warn("recorder.append not implemented; results are not written to the chain")
-            return None
-        except RuntimeError as exc:
-            self.disabled = True
-            _warn(f"results not written to the chain: {exc}")
-            return None
-        self.written.append(rec.seq)
-        return rec
-
-
-def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool, final_code: Path,
-           out_dir: Path | None, base_code: Path | None = None) -> int:
-    """The whole pipeline on an existing trace: chain -> audit -> verify -> gate."""
-    records = load_trace(trace)
-    chain_ok, first_bad, report = chain_status(trace)
-    seal_mode = str((getattr(report, "run", None) or {}).get("mode", "")).upper() if report is not None else ""
-    claims, verdicts, probes = audit_records(records, task, final_code)
-
-    append = None
-    out: Path | None = None
-    if out_dir is not None:
-        out = _copy_trace_for_results(task, Path(trace), out_dir)
-        append = _ChainAppender(out)
-
-    vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append,
-                                             probes=probes, base_code=base_code)
-    gt_ok, gt_seq = ground_truth(records)
-    decision = gate.decide(verdicts, vr, chain_ok, first_bad, claims=claims, ground_truth_ok=gt_ok, ground_truth_seq=gt_seq)
-    if append is not None:
-        rec = append({"kind": "verdict", "origin": "OBSERVED", "payload": asdict(decision)})
-        if rec is not None:
-            print(f"verdict record seq {rec.seq} -> {out}")
-    # A trace is only ever shown as LIVE if its signed seal says so, and the CLI replay path is always REPLAY.
-    print_report("REPLAY", task, chain_ok, first_bad, verdicts, vr, decision, report)
-    if seal_mode and seal_mode != "REPLAY":
-        print(f"note: the seal recorded this run as {seal_mode}; it is being re-audited now, so it is shown as REPLAY")
-    return 0 if decision.decision == "PASS" else 1
+        exp = "PASS" if str(expected).upper() in ("PASS", "MERGED", "MERGE") else "BLOCK"
+        print(f"expected for demo: {exp} -> {'as expected' if exp == d.decision else 'MISMATCH'}")
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -250,29 +99,36 @@ def cmd_run(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         print(f"no such task: {exc}", file=sys.stderr)
         return 1
-    final_code = Path(args.final_code) if args.final_code else ROOT / task.get("repo", "demo_repo")
-    base_code = Path(args.base_code) if args.base_code else None
-    out_dir = None if args.no_write else Path(args.out_dir)
+    on_stage = _stage if args.verbose else None
 
     try:
-        if args.replay:
-            return replay(task, Path(args.replay), offline=args.offline, no_verify=args.no_verify,
-                          final_code=final_code, out_dir=out_dir, base_code=base_code)
+        if args.replay is not None and args.replay != "":
+            # A trace file: the rest of the pipeline on it, on a copy so the original stays untouched.
+            trace = Path(args.replay)
+            if not trace.exists():
+                print(f"no such trace: {trace}", file=sys.stderr)
+                return 1
+            final_code = Path(args.final_code) if args.final_code else ROOT / task.get("repo", "demo_repo")
+            base_code = Path(args.base_code) if args.base_code else None
+            target = trace if args.no_write else pipeline.copy_trace_for_results(str(task["id"]), trace, Path(args.out_dir))
+            res = pipeline.run_trace(task, target, final_code=final_code, base_code=base_code, offline=args.offline,
+                                     no_verify=args.no_verify, chain_results=not args.no_write, on_stage=on_stage)
+        elif args.replay == "":
+            res = pipeline.run_replay(str(task["id"]), offline=args.offline, no_verify=args.no_verify, on_stage=on_stage)
+        else:
+            res = pipeline.run_live(str(task["id"]), time_limit=args.time_limit, offline=args.offline,
+                                    no_verify=args.no_verify, on_stage=on_stage)
     except verifier.BlindnessViolation as exc:
         print(f"error: refusing to call the verifier, its input is not blind: {exc}", file=sys.stderr)
         return 2
-
-    run_task = getattr(recorder, "run_task", None)
-    if run_task is None:
-        print("secondgrader run: live mode needs P1's recorder.run_task (clone, launch Muse Code, record). "
-              "Use --replay <trace.jsonl> meanwhile.", file=sys.stderr)
-        return 2
-    try:
-        trace = Path(run_task(task))  # P1 returns the trace path of the finished run
     except NotImplementedError as exc:
         return _not_implemented(exc)
-    return replay(task, trace, offline=args.offline, no_verify=args.no_verify, final_code=final_code, out_dir=out_dir,
-                  base_code=base_code)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print_report(res, task)
+    return 0 if res.decision.decision == "PASS" else 1
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
@@ -308,22 +164,25 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="run a task end to end (live), or re-audit a trace with --replay")
+    run = sub.add_parser("run", help="run a task live, re-play its saved run (--replay), or judge a trace file (--replay FILE)")
     run.add_argument("task", help="name of a file in tasks/ without .yaml, or a path to a task yaml")
-    run.add_argument("--replay", metavar="TRACE", help="re-run the pipeline on this recorded trace (labelled REPLAY)")
+    run.add_argument("--replay", nargs="?", const="", default=None, metavar="TRACE",
+                     help="no value: re-play P1's saved run of the task; a path: run the pipeline on that trace file")
     run.add_argument("--offline", action="store_true", help="verifier uses its cache only; no network")
     run.add_argument("--no-verify", action="store_true", help="skip the blinded verifier")
-    run.add_argument("--final-code", metavar="DIR", help="the agent's final code (default: the task's repo in this checkout)")
-    run.add_argument("--base-code", metavar="DIR", help="the code before the change; verifier tests passing there too are flagged weak")
-    run.add_argument("--out-dir", default=str(ROOT / "traces"), help="where replay traces with verifier records go")
-    run.add_argument("--no-write", action="store_true", help="do not write verifier records to a trace copy")
+    run.add_argument("--time-limit", type=float, default=600, help="seconds the live agent may run (default 600)")
+    run.add_argument("--final-code", metavar="DIR", help="(trace file only) the agent's final code; default: the task's repo here")
+    run.add_argument("--base-code", metavar="DIR", help="(trace file only) code before the change; tests passing there too are flagged weak")
+    run.add_argument("--out-dir", default=str(ROOT / "traces"), help="(trace file only) where the judged copy goes")
+    run.add_argument("--no-write", action="store_true", help="(trace file only) judge in place without appending anything")
+    run.add_argument("-v", "--verbose", action="store_true", help="print stage progress to stderr")
     run.set_defaults(func=cmd_run)
 
     audit = sub.add_parser("audit", help="audit an existing trace")
     audit.add_argument("trace", help="path to trace.jsonl")
     audit.set_defaults(func=cmd_audit)
 
-    vc = sub.add_parser("verify-chain", help="verify a trace's hash chain and signatures")
+    vc = sub.add_parser("verify-chain", help="verify a trace's hash chain, signatures and seal")
     vc.add_argument("trace", help="path to trace.jsonl")
     vc.set_defaults(func=cmd_verify_chain)
     return p

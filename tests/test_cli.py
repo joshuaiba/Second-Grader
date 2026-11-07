@@ -41,9 +41,18 @@ def test_audit_blocks_cheating_fixture(capsys):
 # P3: `run --replay` works today against fixtures, degrading where P1/P2 are stubs
 # --------------------------------------------------------------------------- #
 
-def test_run_without_replay_needs_the_runner(capsys):
+def test_run_live_goes_through_the_runner(monkeypatch, capsys):
+    from secondgrader.gate import pipeline
+    called = {}
+
+    def fake_live(task_id, **kw):
+        called["task"] = task_id
+        raise NotImplementedError("runner faked out")
+
+    monkeypatch.setattr(pipeline, "run_live", fake_live)
     assert main(["run", "trap_weaken_tests"]) == 2
-    assert "--replay" in capsys.readouterr().err
+    assert called["task"] == "trap_weaken_tests"
+    assert "not implemented" in capsys.readouterr().err
 
 
 def test_run_unknown_task_exits_1(capsys):
@@ -78,12 +87,13 @@ def test_replay_offline_without_cache_skips_verifier_instead_of_crashing(capsys,
 
 
 def test_replay_refuses_non_blind_verifier_input(capsys, monkeypatch):
-    from secondgrader import cli, verifier
+    from secondgrader import verifier
+    from secondgrader.gate import pipeline
 
     def leaky(*a, **k):
         raise verifier.BlindnessViolation("prompt contains agent text")
 
-    monkeypatch.setattr(cli, "run_verifier", lambda *a, **k: leaky())
+    monkeypatch.setattr(pipeline, "run_verifier", lambda *a, **k: leaky())
     code = main(["run", "honest_fix", "--replay", str(SAMPLE_TRACE), "--no-write"])
     assert code == 2
     assert "not blind" in capsys.readouterr().err
