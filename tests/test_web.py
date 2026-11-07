@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from secondgrader import web
 from secondgrader.schema import Claim, ClaimVerdict, GateDecision, VerifierResult, load_trace
 
-from .conftest import SAMPLE_TRACE, TAMPERED_TRACE, TEST_TAMPER_SEQ
+from .conftest import ROOT, SAMPLE_TRACE, TAMPERED_TRACE, TEST_TAMPER_SEQ
 
 
 def test_render_verdict_shows_decision_claims_and_cited_seq():
@@ -36,11 +36,23 @@ def test_app_serves_one_page():
 # helpers
 # --------------------------------------------------------------------------- #
 
-CHIP_RE = re.compile(r'<a id="chip-(\d+)" class="chip (good|bad)"')
+CHIP_RE = re.compile(r'<a id="chip-(\d+)" class="chip (good|bad|untrusted)"')
+HONEST = ROOT / "fixtures" / "samples" / "honest.jsonl"
+TAMPERED_SAMPLE = ROOT / "fixtures" / "samples" / "tampered.jsonl"
 
 
 def _chips(html: str) -> dict[int, str]:
     return {int(seq): cls for seq, cls in CHIP_RE.findall(html)}
+
+
+def _assert_broken_from(chips: dict[int, str], first_bad: int) -> None:
+    """Chip ``first_bad`` is red, everything after is red or amber, everything before is green."""
+    assert chips[first_bad] == "bad"
+    for seq, cls in chips.items():
+        if seq < first_bad:
+            assert cls == "good", seq
+        else:
+            assert cls in {"bad", "untrusted"}, seq
 
 
 @pytest.fixture
@@ -183,9 +195,11 @@ def test_index_with_tampered_fixture(client):
     r = client.get("/?trace=fixtures/sample_trace_tampered.jsonl")
     assert r.status_code == 200
     chips = _chips(r.text)
-    assert all(cls == "bad" for seq, cls in chips.items() if seq >= TEST_TAMPER_SEQ)
-    assert all(cls == "good" for seq, cls in chips.items() if seq < TEST_TAMPER_SEQ)
+    assert len(chips) == len(load_trace(TAMPERED_TRACE))
+    _assert_broken_from(chips, TEST_TAMPER_SEQ)
     assert "BROKEN" in r.text
+    # the recorder's reason and detail are shown
+    assert "does not match its hash" in r.text
 
 
 def test_trace_path_traversal_rejected(client):
@@ -232,8 +246,7 @@ def test_api_tamper_turns_strip_red_from_seq(client):
     assert r.status_code == 200
     chips = _chips(r.text)
     assert len(chips) == len(load_trace(SAMPLE_TRACE))
-    for seq, cls in chips.items():
-        assert cls == ("bad" if seq >= TEST_TAMPER_SEQ else "good"), seq
+    _assert_broken_from(chips, TEST_TAMPER_SEQ)
     assert f"BROKEN from seq {TEST_TAMPER_SEQ}" in r.text
     assert "BLOCKED" in r.text
     # the file on disk is untouched
@@ -251,7 +264,7 @@ def test_api_tamper_rejects_bad_seq_and_json_works(client):
     r = client.post("/api/tamper", json={"seq": 1})
     assert r.status_code == 200
     chips = _chips(r.text)
-    assert set(chips.values()) == {"bad"}
+    assert chips[1] == "bad" and "good" not in chips.values()
 
 
 def test_provider_hooks_swap_verdict_and_tamper(client):
@@ -267,7 +280,7 @@ def test_provider_hooks_swap_verdict_and_tamper(client):
 
         calls = []
 
-        def fake_tamper(records, seq):
+        def fake_tamper(records, seq):  # legacy two-argument provider, plain list back
             calls.append(seq)
             return web_app.tamper_in_memory(records, seq)
 
@@ -276,6 +289,20 @@ def test_provider_hooks_swap_verdict_and_tamper(client):
         assert r.status_code == 200 and calls == [5]
         # a broken chain forces BLOCK even if the provider said PASS
         assert "BLOCKED" in r.text
+        chips = _chips(r.text)
+        assert chips[5] == "bad" and chips[4] == "good"
+
+        seen = []
+
+        def new_tamper(records, seq, *, trace_path):  # new protocol: (records, report)
+            seen.append((seq, trace_path))
+            return web_app.tamper_via_recorder(records, seq, trace_path=trace_path)
+
+        web_app.set_tamper_provider(new_tamper)
+        r = client.post("/api/tamper", data={"seq": "7"})
+        assert r.status_code == 200
+        assert seen == [(7, SAMPLE_TRACE)]
+        _assert_broken_from(_chips(r.text), 7)
     finally:
         web_app.set_verdict_provider(old_verdict)
         web_app.set_tamper_provider(old_tamper)
@@ -329,3 +356,202 @@ def test_auto_verdict_uses_verifier_records_when_present(sample_records):
 def test_auto_verdict_blocks_broken_chain(tampered_records):
     decision, *_ = live.auto_verdict(tampered_records)
     assert decision.decision == "BLOCK" and decision.chain_ok is False and decision.first_bad_seq == TEST_TAMPER_SEQ
+
+
+def test_ground_truth_only_counts_full_final_phase(sample_records):
+    def gt(seq, phase, exit_code):
+        payload = {"command": "pytest -q", "exit_code": exit_code, "ground_truth": True, "source": "ground_truth"}
+        if phase is not None:
+            payload["phase"] = phase
+        return _Record(seq, "t", "test_run", "OBSERVED", payload, "p", "h", "UNSIGNED")
+
+    base = sample_records
+    # collection runs are not the ground truth, even though they come last and exit 0
+    recs = base + [gt(17, "full_final", 1), gt(18, "collect_base", 0), gt(19, "collect_final", 0)]
+    assert live.ground_truth_from_records(recs) == (False, 17)
+    # the real one wins
+    recs = base + [gt(17, "collect_base", 0), gt(18, "collect_final", 0), gt(19, "full_final", 0)]
+    assert live.ground_truth_from_records(recs) == (True, 19)
+    # only collection runs: no ground truth at all
+    recs = base + [gt(17, "collect_base", 0), gt(18, "collect_final", 0)]
+    assert live.ground_truth_from_records(recs) == (None, None)
+    # older traces without a phase key still count
+    assert live.ground_truth_from_records(base + [gt(17, None, 0)]) == (True, 17)
+    # the honest sample: seq 18 is full_final, 16/17 are collection
+    assert live.ground_truth_from_records(load_trace(HONEST)) == (True, 18)
+
+
+# --------------------------------------------------------------------------- #
+# P3.9 / P3.10: the recorder's chain report and tamper backend on the page
+# --------------------------------------------------------------------------- #
+
+def _repo_files() -> set[str]:
+    return {str(p) for p in ROOT.iterdir()} | {str(p) for p in (ROOT / "fixtures").rglob("*")}
+
+
+def test_honest_sample_via_env_is_intact_with_head_hash(client, monkeypatch):
+    from secondgrader import recorder
+
+    monkeypatch.setenv("SG_TRACE_PATH", str(HONEST))
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "INTACT" in r.text and "BROKEN" not in r.text
+    report = recorder.verify_report(HONEST)
+    assert report.ok and report.count == 18
+    assert report.head_hash[:12] in r.text
+    assert f'title="{report.head_hash}"' in r.text  # full hash in the title attribute
+    assert "UNSIGNED fixture" in r.text  # hand-written sample: no signatures, no seal
+    chips = _chips(r.text)
+    assert len(chips) == 18 and set(chips.values()) == {"good"}
+    assert "fixtures/samples/honest.jsonl" in r.text
+    # the seal is absent, so the task comes from the prompt record
+    assert 'value="honest_fix" selected' in r.text
+
+
+def test_tampered_sample_shows_report_reason_and_untrusted_tail(client):
+    from secondgrader import recorder
+
+    r = client.get("/?trace=fixtures/samples/tampered.jsonl")
+    assert r.status_code == 200
+    report = recorder.verify_report(TAMPERED_SAMPLE)
+    assert not report.ok and report.first_bad_seq == 5
+    chips = _chips(r.text)
+    assert len(chips) == 18
+    _assert_broken_from(chips, 5)
+    # per-record statuses drive the chips: 5 is the edited record, 6..18 are untrusted
+    assert chips[5] == "bad" and all(chips[s] == "untrusted" for s in range(6, 19))
+    assert all(chips[s] == "good" for s in range(1, 5))
+    assert "BLOCKED" in r.text and "BROKEN" in r.text
+    assert report.detail.split("seq 5", 1)[1].strip() in r.text  # detail text (seq is linkified)
+    assert f'<code class="reason">{report.reason}</code>' in r.text
+    assert "first_bad_seq = 5" in r.text
+
+
+def test_api_tamper_on_honest_sample_uses_recorder_and_leaves_no_files(client):
+    before_bytes = HONEST.read_bytes()
+    before_files = _repo_files()
+    r = client.post("/api/tamper", data={"seq": "10", "trace": "fixtures/samples/honest.jsonl"})
+    assert r.status_code == 200
+    chips = _chips(r.text)
+    assert len(chips) == 18
+    _assert_broken_from(chips, 10)
+    assert chips[10] == "bad" and all(chips[s] == "untrusted" for s in range(11, 19))
+    assert "BROKEN from seq 10" in r.text
+    assert "does not match its hash" in r.text  # the tampered copy's report, not a hashes-only check
+    assert "BLOCKED" in r.text
+    # the original is byte-identical and nothing was left behind in the repo or fixtures/
+    assert HONEST.read_bytes() == before_bytes
+    assert _repo_files() == before_files
+    assert not list((ROOT / "fixtures" / "samples").glob("*.tampered-*"))
+
+
+def test_tamper_via_recorder_returns_records_and_report(sample_records):
+    from secondgrader.web.app import tamper_via_recorder
+
+    before = SAMPLE_TRACE.read_bytes()
+    tampered, report = tamper_via_recorder(sample_records, 8, trace_path=SAMPLE_TRACE)
+    assert len(tampered) == len(sample_records)
+    assert tampered[7].payload != sample_records[7].payload
+    assert tampered[7].hash == sample_records[7].hash  # stored hash kept, content changed
+    assert report.ok is False and report.first_bad_seq == 8 and report.reason == "hash"
+    assert report.statuses[7] == "bad" and report.statuses[8] == "untrusted"
+    assert SAMPLE_TRACE.read_bytes() == before
+    assert not list(SAMPLE_TRACE.parent.glob("*.tampered-*"))
+
+
+def test_tamper_default_falls_back_to_memory_when_recorder_fails(sample_records, monkeypatch):
+    from secondgrader.web import app as web_app
+
+    def boom(*a, **k):
+        raise RuntimeError("recorder down")
+
+    monkeypatch.setattr(web_app, "tamper_via_recorder", boom)
+    out = web_app.tamper_default(sample_records, 8, trace_path=SAMPLE_TRACE)
+    assert isinstance(out, list)
+    from secondgrader.schema import check_hash_chain
+    assert check_hash_chain(out) == (False, 8)
+
+
+def test_seal_mode_and_task_override_query_params(client, monkeypatch):
+    from secondgrader import recorder
+    from secondgrader.recorder import ChainReport
+
+    real = recorder.verify_report
+
+    def fake_report(path, *a, **k):
+        rep = real(path, *a, **k)
+        rep.signed = True
+        rep.sealed = True
+        rep.run = {"run_id": "run-abc123", "task_id": "honest_fix", "mode": "LIVE",
+                   "recorded_at": "2026-11-07T19:00:00Z", "base_commit": "deadbeefcafe"}
+        return rep
+
+    monkeypatch.setattr(recorder, "verify_report", fake_report)
+    r = client.get("/?mode=REPLAY")  # the seal says LIVE: the seal wins
+    assert r.status_code == 200
+    assert 'class="mode mode-live"' in r.text and 'class="mode mode-replay"' not in r.text
+    assert 'value="honest_fix" selected' in r.text  # task from the seal, not from the prompt record
+    assert "run-abc123" in r.text and "2026-11-07T19:00:00Z" in r.text
+    assert "signed" in r.text and "sealed" in r.text and "UNSIGNED fixture" not in r.text
+    # an explicit ?task still wins over the seal's task
+    r = client.get("/?task=trap_hidden_edit")
+    assert 'value="trap_hidden_edit" selected' in r.text
+
+
+def test_chain_report_falls_back_to_hash_check_without_recorder(client, monkeypatch):
+    from secondgrader import recorder
+
+    monkeypatch.delattr(recorder, "verify_report")
+    r = client.get("/?trace=fixtures/sample_trace_tampered.jsonl")
+    assert r.status_code == 200
+    chips = _chips(r.text)
+    assert all(cls == "bad" for seq, cls in chips.items() if seq >= TEST_TAMPER_SEQ)
+    assert all(cls == "good" for seq, cls in chips.items() if seq < TEST_TAMPER_SEQ)
+    assert "BROKEN" in r.text
+
+
+def test_render_verdict_chain_dict_badges_and_statuses(sample_records):
+    chain = {
+        "ok": False, "first_bad_seq": 3, "reason": "link", "detail": "seq 3 does not point at the previous record's hash",
+        "count": len(sample_records), "head_hash": "ab" * 32, "signed": True, "sealed": True, "pubkey": "cd" * 32,
+        "run": {"run_id": "r1", "task_id": "honest_fix", "mode": "REPLAY", "recorded_at": "2026-11-07T00:00:00Z"},
+        "statuses": ["ok", "ok", "bad"] + ["untrusted"] * (len(sample_records) - 3),
+    }
+    html = web.render_verdict(GateDecision("BLOCK", ["chain"], [], False, 3), [], None, sample_records, chain=chain)
+    chips = _chips(html)
+    assert chips[1] == "good" and chips[2] == "good" and chips[3] == "bad" and chips[4] == "untrusted"
+    assert "abababababab" not in html  # broken chain: the recorder's head hash is the genesis hash, not shown
+    assert "signed" in html and "sealed" in html
+    intact = dict(chain, ok=True, first_bad_seq=None, reason=None, detail="", statuses=["ok"] * len(sample_records))
+    ok_html = web.render_verdict(GateDecision("PASS", [], [], True, None), [], None, sample_records, chain=intact)
+    assert "abababababab" in ok_html and f'title="{"ab" * 32}"' in ok_html
+    assert set(_chips(ok_html).values()) == {"good"}
+    assert '<code class="reason">link</code>' in html and "does not point at the previous record" in html
+    assert "r1" in html and "2026-11-07T00:00:00Z" in html
+    # no chain dict: old behaviour, red from first_bad_seq, no badges
+    plain = web.render_verdict(GateDecision("BLOCK", ["chain"], [], False, 3), [], None, sample_records)
+    assert set(_chips(plain).values()) == {"good", "bad"} and "UNSIGNED fixture" not in plain
+
+
+def test_tamper_findings_severity_pills():
+    verdicts = [
+        ClaimVerdict("tamper:tests/test_parser.py", "CONTRADICTED", [13], "[high] assert weakened in test_split"),
+        ClaimVerdict("tamper:tests/conftest.py", "UNSUPPORTED", [9], "[low] comment-only change"),
+        ClaimVerdict("tamper:pytest.ini", "UNSUPPORTED", [4], "[Medium] addopts changed"),
+        ClaimVerdict("tamper:other", "UNSUPPORTED", [], "no severity prefix"),
+    ]
+    html = web.render_verdict(GateDecision("BLOCK", ["r"], [13]), verdicts, None)
+    section = html.split("Tamper findings", 1)[1].split("Blind verifier", 1)[0]
+    assert '<span class="sev high">high</span>' in section
+    assert '<span class="sev low">low</span>' in section
+    assert '<span class="sev medium">medium</span>' in section
+    # the tag is stripped from the displayed reason
+    assert "[high]" not in section and "[low]" not in section and "[Medium]" not in section
+    assert "assert weakened in test_split" in section and "comment-only change" in section
+    # UNSUPPORTED findings are informational; the CONTRADICTED one is not
+    assert section.count("informational, does not block") == 3
+    high_li = section.split("<li", 2)[1]
+    assert "informational" not in high_li and "CONTRADICTED" in high_li
+    assert web.split_severity("[HIGH] x") == ("high", "x")
+    assert web.split_severity("plain") == (None, "plain")
+    assert web.split_severity(None) == (None, "")

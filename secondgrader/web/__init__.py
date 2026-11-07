@@ -21,6 +21,17 @@ from secondgrader.schema import Claim, ClaimVerdict, GateDecision, Record, Verif
 MODES: tuple[str, ...] = ("REPLAY", "LIVE")
 
 _SEQ_RE = re.compile(r"\bseq (\d+)\b")
+_SEVERITY_RE = re.compile(r"^\s*\[(high|medium|low)\]\s*", re.IGNORECASE)
+_CHIP_CLASS = {"ok": "good", "bad": "bad"}  # any other recorder status (e.g. "untrusted") -> "untrusted"
+
+
+def split_severity(reason: str | None) -> tuple[str | None, str]:
+    """Split a leading ``[high]``/``[medium]``/``[low]`` off a verdict reason -> ``(severity, rest)``."""
+    text = reason or ""
+    m = _SEVERITY_RE.match(text)
+    if not m:
+        return None, text
+    return m.group(1).lower(), text[m.end():]
 
 
 def _e(value: Any) -> str:
@@ -140,29 +151,41 @@ def _payload_html(rec: Record) -> str:
 # Record viewer
 # --------------------------------------------------------------------------- #
 
-def _chain_strip(records: list[Record], chain_ok: bool, first_bad: int | None) -> str:
-    chips = []
+def _chip_states(records: list[Record], chain_ok: bool, first_bad: int | None, statuses: list[str] | None) -> list[str]:
+    """One of ``good``/``bad``/``untrusted`` per record, from the recorder's statuses when they line up."""
+    if statuses and len(statuses) == len(records):
+        return [_CHIP_CLASS.get(str(s).lower(), "untrusted") for s in statuses]
+    out = []
     for rec in records:
-        bad = (not chain_ok) and first_bad is not None and rec.seq >= first_bad
-        cls = "chip bad" if bad else "chip good"
-        title = f"seq {rec.seq} {rec.kind} ({rec.origin})" + (" - chain broken" if bad else "")
+        broken = (not chain_ok) and first_bad is not None and rec.seq >= first_bad
+        out.append("bad" if broken else "good")
+    return out
+
+
+def _chain_strip(records: list[Record], states: list[str]) -> str:
+    chips = []
+    notes = {"good": "", "bad": " - chain broken here", "untrusted": " - after the break, untrusted"}
+    for rec, state in zip(records, states):
+        title = f"seq {rec.seq} {rec.kind} ({rec.origin})" + notes.get(state, "")
         chips.append(
-            f'<a id="chip-{rec.seq}" class="{cls}" href="#rec-{rec.seq}" title="{_e(title)}" '
+            f'<a id="chip-{rec.seq}" class="chip {state}" href="#rec-{rec.seq}" title="{_e(title)}" '
             f'data-seq="{rec.seq}" data-kind="{_e(rec.kind)}"></a>'
         )
     return '<div class="strip" aria-label="hash chain">' + "".join(chips) + "</div>"
 
 
-def _record_details(rec: Record, cited: set[int], broken_from: int | None) -> str:
+def _record_details(rec: Record, cited: set[int], state: str) -> str:
     is_cited = rec.seq in cited
-    is_broken = broken_from is not None and rec.seq >= broken_from
+    is_broken = state != "good"
     cls = "rec" + (" cited" if is_cited else "") + (" broken" if is_broken else "")
     origin_cls = "origin observed" if rec.origin == "OBSERVED" else "origin claimed"
     flags = ""
     if is_cited:
         flags += ' <span class="pill bad">cited by BLOCK</span>'
-    if is_broken:
+    if state == "bad":
         flags += ' <span class="pill bad">chain broken</span>'
+    elif is_broken:
+        flags += ' <span class="pill warn">untrusted</span>'
     return (
         f'<details id="rec-{rec.seq}" class="{cls}"{" open" if is_cited else ""}>'
         f'<summary><span class="seqno">#{rec.seq}</span> '
@@ -184,23 +207,27 @@ def render_records(
     chain_ok: bool = True,
     first_bad_seq: int | None = None,
     cited_seqs: Iterable[int] = (),
+    statuses: list[str] | None = None,
 ) -> str:
     """Chain strip + collapsible record list (the record viewer fragment).
 
-    Each chip has ``id="chip-<seq>"`` and links to ``#rec-<seq>``; chips are
-    ``good`` when intact and ``bad`` from ``first_bad_seq`` on when
-    ``chain_ok`` is False. Records in ``cited_seqs`` are highlighted and opened.
+    Each chip has ``id="chip-<seq>"`` and links to ``#rec-<seq>``. With the
+    recorder's per-record ``statuses`` (one per record) chips are ``good`` for
+    ``ok``, ``bad`` for ``bad`` and ``untrusted`` for anything else. Without
+    them, chips are ``good`` when intact and ``bad`` from ``first_bad_seq`` on
+    when ``chain_ok`` is False. Records in ``cited_seqs`` are highlighted and opened.
     """
     cited = {int(s) for s in cited_seqs}
-    broken_from = None if chain_ok else first_bad_seq
-    strip = _chain_strip(records, chain_ok, first_bad_seq)
-    body = "".join(_record_details(r, cited, broken_from) for r in records)
+    states = _chip_states(records, chain_ok, first_bad_seq, statuses)
+    strip = _chain_strip(records, states)
+    body = "".join(_record_details(r, cited, st) for r, st in zip(records, states))
     return (
         '<section id="records" class="card">'
         f'<h2>Trace <span class="muted">{len(records)} records</span></h2>'
         f"{strip}"
         '<div class="legend muted"><span class="chip good"></span> intact '
-        '<span class="chip bad"></span> broken chain &nbsp; '
+        '<span class="chip bad"></span> broken here '
+        '<span class="chip untrusted"></span> after the break &nbsp; '
         '<span class="origin observed">OBSERVED</span> evidence &nbsp; '
         '<span class="origin claimed">CLAIMED</span> agent text</div>'
         f'<div class="reclist">{body}</div>'
@@ -261,23 +288,54 @@ def _reasons(decision: GateDecision) -> str:
     )
 
 
-def _chain_card(decision: GateDecision, n_records: int | None) -> str:
+def _chain_card(decision: GateDecision, n_records: int | None, chain: dict[str, Any] | None) -> str:
+    chain = chain or {}
     if decision.chain_ok:
         status = '<span class="pill ok">INTACT</span>'
         detail = "every hash and prev_hash verified"
+        if chain.get("signed"):
+            detail = "every hash, prev_hash and signature verified"
+        if chain.get("sealed"):
+            detail += ", seal matches"
         if n_records is not None:
             detail = f"{n_records} records, " + detail
     else:
         status = '<span class="pill bad">BROKEN</span>'
         bad = _seq_link(decision.first_bad_seq) if decision.first_bad_seq is not None else "unknown"
         detail = f"first bad record: {bad}"
-    return (
-        '<section class="card chain"><h2>Hash chain</h2>'
+    lines = [
         f'<div class="kv">{status} <span class="muted">{detail}</span>'
         + (f' <span class="muted">first_bad_seq = {_e(decision.first_bad_seq)}</span>' if decision.first_bad_seq is not None else "")
         + "</div>"
-        "</section>"
-    )
+    ]
+    if not decision.chain_ok and (chain.get("reason") or chain.get("detail")):
+        reason = f'<code class="reason">{_e(chain.get("reason"))}</code> ' if chain.get("reason") else ""
+        lines.append(f'<div class="kv chain-why">{reason}{_link_seqs_in_text(str(chain.get("detail") or ""))}</div>')
+    if chain:
+        if chain.get("signed"):
+            badge = '<span class="badge signed">signed' + (" &middot; sealed" if chain.get("sealed") else "") + "</span>"
+        elif chain.get("sealed"):
+            badge = '<span class="badge signed">sealed</span>'
+        else:
+            badge = '<span class="badge unsigned">UNSIGNED fixture</span>'
+        # On a broken chain the recorder reports the genesis hash: not worth showing.
+        head = (chain.get("head_hash") or "") if chain.get("ok") else ""
+        meta = [badge]
+        if head:
+            meta.append(f'<span><b>head</b> <code class="hash" title="{_e(head)}">{_short(head)}</code></span>')
+        if chain.get("count") is not None:
+            meta.append(f'<span><b>count</b> {_e(chain.get("count"))}</span>')
+        run = chain.get("run") or {}
+        if run.get("run_id"):
+            meta.append(f'<span><b>run</b> <code>{_e(run.get("run_id"))}</code></span>')
+        if run.get("recorded_at"):
+            meta.append(f'<span><b>recorded</b> {_e(run.get("recorded_at"))}</span>')
+        if run.get("base_commit"):
+            meta.append(f'<span><b>base</b> <code title="{_e(run.get("base_commit"))}">{_short(str(run.get("base_commit")))}</code></span>')
+        if chain.get("pubkey"):
+            meta.append(f'<span><b>pubkey</b> <code title="{_e(chain.get("pubkey"))}">{_short(str(chain.get("pubkey")))}</code></span>')
+        lines.append('<div class="kv chain-meta muted">' + " ".join(meta) + "</div>")
+    return '<section class="card chain"><h2>Hash chain</h2>' + "".join(lines) + "</section>"
 
 
 def _claims_table(verdicts: list[ClaimVerdict], claims: dict[str, Claim]) -> str:
@@ -315,9 +373,16 @@ def _tamper_section(tampers: list[ClaimVerdict]) -> str:
     items = []
     for t in tampers:
         target = t.claim_id.split(":", 1)[1] if ":" in t.claim_id else t.claim_id
+        severity, reason = split_severity(t.reason)
+        sev = f'<span class="sev {severity}">{severity}</span> ' if severity else ""
+        note = (
+            ' <span class="muted">(informational, does not block)</span>'
+            if t.status != "CONTRADICTED"
+            else ""
+        )
         items.append(
-            f'<li><span class="status {_e(t.status.lower())}">{_e(t.status)}</span> '
-            f"<code>{_e(target)}</code> &mdash; {_e(t.reason)} "
+            f'<li class="tamper-{_e(t.status.lower())}">{sev}<span class="status {_e(t.status.lower())}">{_e(t.status)}</span>{note} '
+            f"<code>{_e(target)}</code> &mdash; {_e(reason)} "
             f'<span class="muted">evidence</span> {_seq_links(t.evidence_seqs)}</li>'
         )
     return f'<section class="card tampers"><h2>Tamper findings</h2><ul>{"".join(items)}</ul></section>'
@@ -378,8 +443,9 @@ def _tamper_form(n_records: int, trace: str, mode: str) -> str:
     return (
         '<form class="card tamperform" method="post" action="/api/tamper">'
         "<h2>Tamper demo</h2>"
-        '<p class="muted">Flips one byte in the payload of record N <em>in memory</em> and re-checks the chain. '
-        "The strip turns red from N onwards. The trace file on disk is never changed.</p>"
+        '<p class="muted">Edits the payload of record N in a <em>throwaway copy</em> of the trace and re-verifies '
+        "the chain with the recorder. Chip N turns red and everything after it is untrusted. "
+        "The trace file on disk is never changed.</p>"
         f'<label>Tamper with record <input type="number" name="seq" min="1" max="{n_records}" value="{default}" required></label> '
         f'<input type="hidden" name="trace" value="{_e(trace)}">'
         f'<input type="hidden" name="mode" value="{_e(mode)}">'
@@ -441,8 +507,17 @@ pre.diff .add { color:var(--green) } pre.diff .del { color:var(--red) } pre.diff
 blockquote.claimed-text { margin:.3rem 0; padding:.4rem .8rem; border-left:3px solid var(--claimed); background:var(--claimed-bg); border-radius:4px }
 .strip { display:flex; flex-wrap:wrap; gap:4px; margin:.4rem 0 }
 .chip { display:inline-block; width:18px; height:18px; border-radius:3px; border:1px solid rgba(0,0,0,.2) }
-.chip.good { background:var(--green) } .chip.bad { background:var(--red) }
+.chip.good { background:var(--green) } .chip.bad { background:var(--red) } .chip.untrusted { background:var(--amber) }
 .chip:hover { outline:2px solid var(--fg) }
+.badge { display:inline-block; font-size:.75em; font-weight:700; letter-spacing:.05em; padding:.1em .5em; border-radius:4px; margin-right:.4em }
+.badge.signed { background:var(--green-bg); color:var(--green); border:1px solid var(--green) }
+.badge.unsigned { background:var(--code); color:var(--muted); border:1px solid var(--line) }
+.chain-meta { display:flex; flex-wrap:wrap; gap:.3rem 1rem; align-items:center; font-size:.85rem }
+.chain-why code.reason { background:var(--red-bg); color:var(--red); padding:.05em .4em; border-radius:4px }
+.sev { display:inline-block; font-size:.72em; font-weight:700; text-transform:uppercase; letter-spacing:.06em; padding:.1em .45em; border-radius:4px }
+.sev.high { background:var(--red); color:#fff } .sev.medium { background:var(--amber-bg); color:var(--amber); border:1px solid var(--amber) }
+.sev.low { background:var(--code); color:var(--muted); border:1px solid var(--line) }
+.tampers li { margin:.3rem 0 }
 .legend { font-size:.8rem; margin:.3rem 0 .6rem } .legend .chip { width:12px; height:12px; vertical-align:middle }
 .origin { font-size:.72em; font-weight:700; letter-spacing:.06em; padding:.1em .45em; border-radius:3px }
 .origin.observed { background:var(--observed-bg); color:var(--observed); border:1px solid var(--observed) }
@@ -517,6 +592,7 @@ def render_verdict(
     selected_task: str = "",
     trace_name: str = "",
     flash: str = "",
+    chain: dict[str, Any] | None = None,
 ) -> str:
     """Return the verdict page as a complete HTML string.
 
@@ -534,6 +610,13 @@ def render_verdict(
         selected_task: task id pre-selected in the picker.
         trace_name: trace identifier echoed in the header and the tamper form.
         flash: a one-line notice shown under the header (escaped).
+        chain: the recorder's chain report as a plain dict with keys ``ok``,
+            ``first_bad_seq``, ``reason``, ``detail``, ``count``, ``head_hash``,
+            ``signed``, ``sealed``, ``pubkey``, ``run`` and ``statuses``
+            (``secondgrader.web.app.CHAIN_KEYS``). Drives the chain card's
+            badges and reason text and the per-record chip colours. Optional:
+            without it the card and strip fall back to ``decision.chain_ok`` /
+            ``decision.first_bad_seq``.
     """
     mode = (mode or "REPLAY").upper()
     if mode not in MODES:
@@ -575,7 +658,7 @@ def render_verdict(
         _task_picker(tasks, mode, selected_task),
         _stamp(decision, mode),
         _reasons(decision),
-        _chain_card(decision, len(records) if records is not None else None),
+        _chain_card(decision, len(records) if records is not None else None, chain),
         _claims_table(plain, claim_map),
         _tamper_section(tampers),
         _verifier_section(verifier_result),
@@ -587,6 +670,7 @@ def render_verdict(
                 chain_ok=decision.chain_ok,
                 first_bad_seq=decision.first_bad_seq,
                 cited_seqs=cited,
+                statuses=(chain or {}).get("statuses"),
             )
         )
         parts.append(_tamper_form(len(records), trace_name, mode))
@@ -598,4 +682,4 @@ def render_verdict(
     return "\n".join(p for p in parts if p)
 
 
-__all__ = ["MODES", "render_records", "render_verdict"]
+__all__ = ["MODES", "render_records", "render_verdict", "split_severity"]
