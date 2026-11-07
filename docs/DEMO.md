@@ -12,11 +12,19 @@ cd Second-Grader && git pull --ff-only && uv sync && uv run pytest -q
 uv run secondgrader run trap_weaken_tests --replay fixtures/traps/trap_weaken_tests.jsonl -v
 ```
 
-Run every command in the script once so the verifier's cache is warm, then start the page and leave it open in a browser tab:
+Run every command in the script once so the verifier's cache is warm, then start the page:
 
 ```bash
 uv run uvicorn secondgrader.web.app:app
 ```
+
+The page loads a judged trace by URL, not from a picker. Beat 2's command writes its judged copy under `traces/`; find the newest and open it in a browser tab so beat 3 is a tab switch:
+
+```bash
+ls -t traces/replay-trap_weaken_tests-*.jsonl | head -1
+```
+
+Open `http://127.0.0.1:8000/?trace=<that path>&mode=REPLAY&task=trap_weaken_tests`. Do not use the page's Run button for beat 3: its Replay plays Kevin's real honest run of the task, whose record 12 is something else.
 
 Have two terminals: one for commands, one with the page's server log. Zoom the terminal font. If the Wi-Fi dies, add `--offline` to every `run` command; the cached runs still work.
 
@@ -63,9 +71,9 @@ End on: "BLOCK, quarantined, four records cited." Switch to the browser.
 
 Say: "One page, not a dashboard. The decision, each claim with its status, the cited records, and the chain strip: every record verified, head hash and public key from the signed seal."
 
-Scroll once to show the cited records highlighted. Then: "What if someone edits the log after the fact to hide the failing run?" Click the tamper button on record 12 (the failing test run; the backend flips its exit code to 0 in a throwaway copy).
+Scroll once to show the cited records highlighted. Then: "What if someone edits the log after the fact to hide the failing run?" Click the tamper button on record 12 (the failing test run, exit code 1; the backend edits it in a throwaway copy).
 
-Say: "The hash of record 12 no longer matches, so the chain breaks there and every later record is untrusted. The gate blocks on chain integrity alone, before it even reads a claim. You cannot launder the log."
+Say: "The hash of record 12 no longer matches, so the chain breaks there and every later record is untrusted. The gate blocks on chain integrity alone, before it even reads a claim. You cannot launder the log." The page's own words are "Chain check: BROKEN from seq 12", which is the line to read out.
 
 If the button misbehaves, fall back to the terminal:
 
