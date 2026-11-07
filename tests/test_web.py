@@ -582,6 +582,9 @@ def fresh_manager(tmp_path, monkeypatch):
     monkeypatch.setitem(app_mod.providers, "run", m.start)
     monkeypatch.setitem(app_mod.providers, "status", m.status)
     monkeypatch.setenv("SG_SIGNING_KEY_PATH", str(tmp_path / "k.pem"))
+    # Deterministic without network: verifier runs offline against an empty cache, so it is skipped.
+    monkeypatch.setenv("SG_OFFLINE", "1")
+    monkeypatch.setenv("SG_CACHE_DIR", str(tmp_path / "cache"))
     # Runs land under tmp_path here (in production under <repo>/traces); let the page's path guard see them.
     monkeypatch.setattr(app_mod, "REPO_ROOT", tmp_path)
     return m
