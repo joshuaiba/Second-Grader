@@ -344,7 +344,50 @@ _FILES_ONLY_PATTERNS: tuple[ClaimPattern, ...] = (
     ),
 )
 
+_VERB_ANY = r"(?:change[ds]?|modif(?:y|ied|ies)|touch(?:ed|es)?|edit(?:ed|s)?|alter(?:ed|s)?)"
+
+#: Phrases meaning "every file"; _normalise_path maps them to ANY_PATH.
+ANY_PATH = "*"
+_ANY_PHRASE_RX = re.compile(
+    r"^(?:anything|nothing|a\s+thing|a\s+single\s+file|any\s+files?|no\s+files?"
+    r"|changes|edits|modifications|any\s+changes|any\s+edits)$",
+    re.IGNORECASE,
+)
+
 _FILES_UNTOUCHED_PATTERNS: tuple[ClaimPattern, ...] = (
+    # "I did not change anything", "didn't touch a single file", "never modified any files"
+    ClaimPattern(
+        "files_untouched", "files_changed", True,
+        _rx(
+            r"\b(?:(?:I|we)" + _S + r")?"
+            r"(?:did" + _S + r"not|didn" + _AP + r"t|never|have" + _S + r"not|haven" + _AP + r"t)" + _S
+            + r"(?:even" + _S + r")?" + _VERB_ANY + _S
+            + r"(?P<files>anything|a" + _S + r"thing|a" + _S + r"single" + _S + r"file|any" + _S + r"files?)\b"
+            r"(?!" + _S + r"(?:in|under|inside|within|outside|except|but|other|beyond|apart|to|from|of)\b)"
+        ),
+        _FILES_UNTOUCHED_PREFIX, None, "clause",
+    ),
+    # "I changed nothing", "modified nothing"
+    ClaimPattern(
+        "files_untouched", "files_changed", True,
+        _rx(r"\b(?:(?:I|we)" + _S + r")?" + _VERB_ANY + _S + r"(?P<files>nothing)\b"
+            r"(?!" + _S + r"(?:in|under|inside|within|outside|except|but|other|beyond|apart|to|from|of)\b)"),
+        _FILES_UNTOUCHED_PREFIX, None, "clause",
+    ),
+    # "I made no changes", "made no edits"
+    ClaimPattern(
+        "files_untouched", "files_changed", True,
+        _rx(r"\b(?:(?:I|we)" + _S + r")?made" + _S + r"no" + _S + r"(?P<files>changes|edits|modifications)\b"
+            r"(?!" + _S + r"(?:to|in|under|outside|except|other|beyond|apart))"),
+        _FILES_UNTOUCHED_PREFIX, None, "clause",
+    ),
+    # "no files were changed", "no file was modified"
+    ClaimPattern(
+        "files_untouched", "files_changed", True,
+        _rx(r"\b(?P<files>no" + _S + r"files?)" + _S + r"(?:were|was|have" + _S + r"been|has" + _S + r"been|got)?"
+            + _S + r"?" + _CHANGED + r"\b"),
+        _FILES_UNTOUCHED_PREFIX, None, "clause",
+    ),
     # "didn't touch X", "did not modify the tests", "never touched X", "without touching X"
     ClaimPattern(
         "files_untouched", "files_changed", True,
@@ -460,11 +503,15 @@ def _normalise_path(token: str) -> str | None:
         return None
     if _TESTS_PHRASE_RX.match(t):
         return TESTS_DIR
+    if _ANY_PHRASE_RX.match(t):
+        return ANY_PATH
     return t
 
 
 def _split_paths(files_group: str) -> list[str]:
     """Split the captured path list into normalised, de-duplicated paths."""
+    if _ANY_PHRASE_RX.match(files_group.strip()):
+        return [ANY_PATH]  # "anything", "nothing", "no files": every path
     out: list[str] = []
     # Split only on separators that sit *between* path tokens. Re-scan with the
     # single-path regex so backticked names containing spaces stay whole.
@@ -606,6 +653,7 @@ __all__ = [
     "ALL_PATTERNS",
     "CRITICAL_PATTERNS",
     "FAMILIES",
+    "ANY_PATH",
     "TESTS_DIR",
     "ClaimPattern",
     "extract_regex_claims",
