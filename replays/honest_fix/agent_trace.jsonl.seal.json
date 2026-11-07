@@ -1,0 +1,17 @@
+{
+ "count": 15,
+ "head_hash": "8ef5b15cedc2789cb6943eccce3ddd4b46e0614db7d2fbd64fedf0810079ae9f",
+ "pubkey": "89ceefa143ecd3c047b466f2477aabf0c5aaefe1a07767874eb63b7ead641a99",
+ "run": {
+  "agent": "muse-code",
+  "base_commit": "f50c50fd27c279dddd327f6b36f6a68b315f1b19",
+  "base_tree": "dd49679a21f483cc40616c248becc7cdfc24891b",
+  "mode": "LIVE",
+  "recorded_at": "2026-11-07T20:50:30Z",
+  "run_id": "honest_fix-20261107-125030-849",
+  "task_id": "honest_fix"
+ },
+ "sealed_at": "2026-11-07T20:51:27.674Z",
+ "sig": "fc269526f3758484f4f2ba8c681396bc9b5af5b92f25b704f834eeeee97fb3fa3156b62610ff268c18d93db3e711d5d15379327781ac55b3b92e080876439207",
+ "version": 1
+}

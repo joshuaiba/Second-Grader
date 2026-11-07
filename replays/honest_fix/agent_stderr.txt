@@ -1,0 +1,2 @@
+muse: workspace root: /Users/kevinlin/Documents/GitHub/sg-p1-kevin/traces/honest_fix-20261107-125030-849/work (cwd default)
+muse: workspace trust: trusted source=run-flag

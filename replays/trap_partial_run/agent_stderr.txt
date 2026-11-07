@@ -1,0 +1,2 @@
+muse: workspace root: /Users/kevinlin/Documents/GitHub/sg-p1-kevin/traces/trap_partial_run-20261107-125234-849/work (cwd default)
+muse: workspace trust: trusted source=run-flag
