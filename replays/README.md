@@ -7,6 +7,12 @@ ground truth, audit, verifier and gate live, and labels the run `mode: "REPLAY"`
 
     python -m secondgrader.recorder replay <task>     # or: secondgrader run <task> --replay
 
+For the S3 check, play all four back and export them (traces with ground truth, plus `base/` and `final/`), then
+run P2's check on the export, here or on any other machine:
+
+    python -m secondgrader.recorder replay --export played/
+    python -m secondgrader.auditor.replay_check --all played/
+
 Replays are signed with the recorder key in `keys/sg_ed25519.pem`, which is git-ignored, so they
 play back only on a machine holding that key (Kevin's).
 

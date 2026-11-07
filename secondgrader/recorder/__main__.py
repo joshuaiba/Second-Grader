@@ -2,7 +2,9 @@
 
     python -m secondgrader.recorder run <task> [--time-limit S] [--scripted]
     python -m secondgrader.recorder save-replay <run_dir>
-    python -m secondgrader.recorder replay <task|replay_dir>
+    python -m secondgrader.recorder replay [task|replay_dir ...] [--export DIR]
+                                                         all replays/ by default; --export copies each
+                                                         played trace to DIR/<task>/ for replay_check --all
     python -m secondgrader.recorder record-replays [task ...]     live run + save replay, all tasks by default
     python -m secondgrader.recorder verify <trace.jsonl> [--json]
     python -m secondgrader.recorder tamper <trace.jsonl> <seq> <field> <json value> [--rehash]
@@ -17,7 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import verify_report
-from .replay import replay, save_replay
+from .replay import REPLAYS, export_played, replay, save_replay
 from .runner import ROOT, run_task
 from .tamper import tamper
 
@@ -36,7 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     rr.add_argument("tasks", nargs="*")
     rr.add_argument("--time-limit", type=float, default=600)
     rp = sub.add_parser("replay")
-    rp.add_argument("source")
+    rp.add_argument("sources", nargs="*", help="task ids or replay dirs (default: every replays/<task>/)")
+    rp.add_argument("--export", metavar="DIR", help="copy each played trace with base/ and final/ to DIR/<task>/")
     v = sub.add_parser("verify")
     v.add_argument("trace")
     v.add_argument("--json", action="store_true")
@@ -69,9 +72,20 @@ def main(argv: list[str] | None = None) -> int:
         print(save_replay(a.run_dir))
         return 0
     if a.cmd == "replay":
-        res = replay(a.source)
-        print(json.dumps(asdict(res), indent=1))
-        return 0
+        sources = a.sources or sorted(d.name for d in REPLAYS.iterdir() if (d / "replay.json").exists())
+        if len(sources) == 1 and not a.export:
+            print(json.dumps(asdict(replay(sources[0])), indent=1))
+            return 0
+        failed = 0
+        for src in sources:
+            try:
+                res = replay(src)
+                where = f", exported to {export_played(res, a.export)}" if a.export else ""
+                print(f"{res.task_id}: played {res.run_dir}{where}")
+            except Exception as exc:  # noqa: BLE001  keep going; report every replay
+                failed += 1
+                print(f"{src}: FAILED {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1 if failed else 0
     if a.cmd == "verify":
         rep = verify_report(a.trace)
     else:

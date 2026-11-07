@@ -421,6 +421,19 @@ def test_replay_is_labelled_and_verified(run_env):
                           check=True).stdout.strip()
     assert head == live.final_commit
 
+    # the played run exports to the layout replay_check --all reads (S3 on another machine)
+    from secondgrader.auditor.replay_check import check
+    from secondgrader.recorder.replay import export_played
+    out = export_played(rep, run_env / "played")
+    assert out == run_env / "played" / "trap_partial_run"
+    assert (out / "base").is_dir() and (out / "final" / "parser.py").exists()
+    exported = recorder.verify_report(out / "agent_trace.jsonl", expect_run_id=rep.run_id)
+    assert exported.ok and exported.sealed and exported.run["mode"] == "REPLAY"
+    assert any(r.payload.get("phase") == "full_final" for r in load_trace(out / "agent_trace.jsonl"))
+    _, problems, _ = check(ROOT / "tasks" / "trap_partial_run.yaml", out / "agent_trace.jsonl",
+                           base_dir=out / "base", final_dir=out / "final")
+    assert not any(p.startswith("NO_GROUND_TRUTH") for p in problems), problems
+
     # an edited replay is refused
     snap = saved / "agent_trace.jsonl"
     lines = snap.read_text().splitlines()
