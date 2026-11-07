@@ -15,11 +15,10 @@ def test_parser_has_three_subcommands():
 
 
 def test_stubs_exit_2_not_crash(capsys):
-    assert main(["verify-chain", str(SAMPLE_TRACE)]) == 2
+    assert main(["audit", str(SAMPLE_TRACE)]) == 2
     assert "not implemented" in capsys.readouterr().err
 
 
-@pytest.mark.skip(reason=NOT_IMPLEMENTED)
 def test_verify_chain_exit_codes():
     assert main(["verify-chain", str(SAMPLE_TRACE)]) == 0
     assert main(["verify-chain", str(TAMPERED_TRACE)]) == 1
