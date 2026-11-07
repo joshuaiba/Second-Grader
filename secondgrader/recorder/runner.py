@@ -211,7 +211,7 @@ def run_ground_truth(result: RunResult, writer: TraceWriter) -> list[int]:
     """
     run_dir, work = Path(result.run_dir), Path(result.work_dir)
     seqs = []
-    gt = {"source": "ground_truth"}
+    gt = {"source": "ground_truth", "ground_truth": True}
     for row in changed_files(work, result.base_tree, result.final_tree):
         diff = tree_diff(work, result.base_tree, result.final_tree, row["path"])
         added = sum(1 for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++"))

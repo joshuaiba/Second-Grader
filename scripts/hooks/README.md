@@ -62,7 +62,7 @@ project hooks load under `--trust-workspace`; and where the session log lives.
 - `test_run` with `"source": "agent"`: a pytest command the agent ran. `exit_code` is the exit code
   of the **whole shell command**, so it is masked when the output is piped (`| tail`). It may be
   `null` if Muse Code didn't report one.
-- `test_run` with `"source": "ground_truth"`: our own runs on clean copies. `phase` is one of
+- `test_run` with `"source": "ground_truth"` and `"ground_truth": true`: our own runs on clean copies. `phase` is one of
   `collect_base`, `collect_final` (with `node_ids`) or `full_final`. A `diff` with
   `"source": "ground_truth"` is the true base-to-final change, one record per file.
 - The first record is a `prompt` written by the runner (`"source": "runner"`, plus `task_id`).

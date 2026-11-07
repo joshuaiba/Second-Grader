@@ -337,7 +337,7 @@ class Story:
 
     def ground_truth(self, failures: tuple = ()) -> list[tuple[str, dict]]:
         """Finish the story with run_ground_truth's records; ``failures`` fail on the final tree."""
-        gt = {"source": "ground_truth"}
+        gt = {"source": "ground_truth", "ground_truth": True}
         d = git_diff("parser.py", BASE_SRC, self.src)
         added, removed = diff_counts(d)
         recs = [("diff", {"path": "parser.py", "status": "M", "diff": d, "lines_added": added,
@@ -531,7 +531,7 @@ Records follow the shape the real recorder writes (scripts/hooks/README.md,
   `tree_before`, `tree`, `via_tool`) → a `test_run` with `source: agent` if it was a pytest
   shell command (`collected` is null because `pytest -q` doesn't print it).
 - Mid-run `model_message`s have `event: PostLLMCall`; the final claim has `event: Stop`.
-- After the final claim come the ground-truth records (`source: ground_truth`): one `diff`
+- After the final claim come the ground-truth records (`source: ground_truth`, `ground_truth: true`): one `diff`
   base → final, `test_run` `collect_base` and `collect_final` (with `node_ids`), and
   `test_run` `full_final` (`pytest -q -rA` on the final tree).
 
