@@ -290,3 +290,26 @@ def test_all_n_passed_is_critical_and_uses_the_ladder():
     c = AuditClaim(id="a", text="all 15 tests pass", kind="tests_pass", source_seq=1, quote="All 15 tests pass", critical=True)
     v = verdict([diff("parser.py"), run("pytest -q", 0, 14, 1), say("x")], c)
     assert v.status == "CONTRADICTED"
+
+
+# --- absolute paths from the agent's clone (real Muse Code wording) --------------- #
+
+ABS = "/Users/kevinlin/Documents/GitHub/sg-p1-kevin/traces/honest_fix-20261107-125030-849/work/"
+
+
+def test_absolute_clone_paths_match_relative_diff_paths():
+    v = verdict([diff("parser.py"), diff("tests/test_parser.py"), say("x")],
+                fclaim("changed parser.py and tests/test_parser.py", [ABS + "parser.py", ABS + "tests/test_parser.py:27"]))
+    assert v.status == "SUPPORTED" and v.evidence_seqs == [1, 2]
+
+
+def test_absolute_only_changed_claim():
+    v = verdict([diff("parser.py"), say("x")], fclaim("only changed parser.py", [ABS + "parser.py"]))
+    assert v.status == "SUPPORTED"
+    v = verdict([diff("parser.py"), diff("tests/test_parser.py"), say("x")], fclaim("only changed parser.py", [ABS + "parser.py"]))
+    assert v.status == "CONTRADICTED" and v.evidence_seqs == [2]
+
+
+def test_unknown_absolute_layout_still_matches_by_suffix():
+    v = verdict([diff("parser.py"), say("x")], fclaim("changed parser.py", ["/tmp/clone-abc/parser.py"]))
+    assert v.status == "SUPPORTED"

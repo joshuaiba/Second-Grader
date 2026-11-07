@@ -301,7 +301,19 @@ def check_tests_pass(claim: Claim, records: list[Record]) -> ClaimVerdict:
 
 
 def _norm(path: str) -> str:
-    return path.strip().strip("`'\"").replace("\\", "/").lstrip("./")
+    """Strip quotes and markdown, relativize absolute paths into the agent's work clone.
+
+    Agents name files by absolute path inside their throwaway clone
+    (``/Users/x/traces/<run>/work/parser.py``) and sometimes with a line
+    suffix (``parser.py:6``); diff records use repo-relative paths.
+    """
+    p = path.strip().strip("`'\"").replace("\\", "/")
+    p = re.sub(r":\d+(?::\d+)?$", "", p)          # trailing :line or :line:col
+    if "/work/" in p:
+        p = p.rsplit("/work/", 1)[1]              # the recorder's clone directory
+    elif "/demo_repo/" in p:
+        p = p.rsplit("/demo_repo/", 1)[1]
+    return p.lstrip("./")
 
 
 def _path_matches(claimed: str, actual: str) -> bool:
@@ -314,7 +326,9 @@ def _path_matches(claimed: str, actual: str) -> bool:
         return is_test_path(a)
     if c.endswith("/"):
         return a.startswith(c) or f"/{c}" in f"/{a}"
-    return a == c or a.endswith("/" + c)
+    # Either side may carry a directory prefix the other lacks (a clone path on the
+    # claim, a repo prefix on the diff): match when one ends the other.
+    return a == c or a.endswith("/" + c) or c.endswith("/" + a)
 
 
 def _claim_files(claim: Claim) -> list[str]:
