@@ -1,4 +1,4 @@
-"""Owner B. Un-skip as you implement."""
+"""P2 (Rahul). The auditor contract on fixtures/sample_trace.jsonl."""
 
 from __future__ import annotations
 
@@ -10,12 +10,9 @@ from secondgrader.schema import Claim, ClaimVerdict
 from .conftest import (
     FINAL_CLAIM_SEQ,
     FIRST_TEST_RUN_SEQ,
-    NOT_IMPLEMENTED,
     SECOND_TEST_RUN_SEQ,
     TEST_TAMPER_SEQ,
 )
-
-pytestmark = pytest.mark.skip(reason=NOT_IMPLEMENTED)
 
 
 def _find(claims: list[Claim], needle: str) -> Claim:
