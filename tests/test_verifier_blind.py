@@ -316,3 +316,36 @@ def test_probe_that_quotes_the_spec_does_not_abort(sample_records, final_code):
     result = blind.verify(SPEC, _diff(sample_records), observed(sample_records), client=FakeModel([GOOD_TEST, probe_test]),
                           final_code_dir=final_code, probes=[probe], all_records=sample_records)
     assert result.passed == 3
+
+
+# ---- P3.12 weak tests ------------------------------------------------------- #
+
+def test_weak_tests_are_flagged_but_still_pass(sample_records, final_code, tmp_path):
+    # Base code: parse_kv that splits on every '=' (the bug the fixture fixes).
+    base = tmp_path / "base"
+    shutil.copytree(DEMO, base)
+    (base / "parser.py").write_text(
+        "def parse_kv(text):\n"
+        "    result = {}\n"
+        "    for raw in text.splitlines():\n"
+        "        line = raw.strip()\n"
+        "        if not line or line.startswith('#'):\n"
+        "            continue\n"
+        "        parts = line.split('=')\n"
+        "        if len(parts) != 2:\n"
+        "            raise ValueError('missing =')\n"
+        "        result[parts[0].strip()] = parts[1].strip()\n"
+        "    return result\n"
+    )
+    result = blind.verify(SPEC, _diff(sample_records), observed(sample_records), client=FakeModel([GOOD_TEST]),
+                          final_code_dir=final_code, base_code_dir=base)
+    by_name = {d["name"]: d for d in result.details}
+    assert by_name["test_first_equals_splits"]["weak"] is False   # fails on base: it checks the change
+    assert by_name["test_missing_equals_raises"]["weak"] is True  # passes on base too: weak
+    assert result.passed == 2 and result.failed == 0              # weak never changes the counts
+
+
+def test_no_base_code_means_no_weak_flag(sample_records, final_code):
+    result = blind.verify(SPEC, _diff(sample_records), observed(sample_records), client=FakeModel([GOOD_TEST]),
+                          final_code_dir=final_code)
+    assert all("weak" not in d for d in result.details)

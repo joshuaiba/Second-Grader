@@ -34,6 +34,7 @@ def verify(
     recorder_append: Callable[[dict[str, Any]], Any] | None = None,
     client: Any | None = None,
     timeout: int = 60,
+    base_code_dir: str | Path | None = None,
 ) -> VerifierResult:
     """Generate and run independent tests (blind phase, then probe phase).
 
@@ -63,6 +64,7 @@ def verify(
     return blind.verify(
         spec, diff, observed, client=client, final_code_dir=final_code_dir, module_name=module_name,
         probes=probes, all_records=all_records, recorder_append=recorder_append, timeout=timeout,
+        base_code_dir=base_code_dir,
     )
 
 

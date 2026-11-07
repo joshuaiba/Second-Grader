@@ -401,9 +401,22 @@ def _record(append: RecorderAppend | None, payload: dict[str, Any]) -> int | Non
     return getattr(rec, "seq", None)
 
 
+def mark_weak_tests(details: list[dict[str, Any]], base_code_dir: Path, source: str, *, phase: str,
+                    timeout: int) -> None:
+    """P3.12: a test that also passes on the *base* code did not check the change.
+
+    Sets ``detail["weak"] = True`` for tests that passed on both base and
+    final. Weak tests are shown, never block, and stay counted as passed.
+    """
+    base_results = {r["name"]: r["outcome"] for r in run_tests(base_code_dir, source, name=f"test_verifier_{phase}_base.py",
+                                                                timeout=timeout, retries=0)}
+    for d in details:
+        d["weak"] = d["outcome"] == "passed" and base_results.get(d["name"]) == "passed"
+
+
 def _phase(
     client: TextModel, prompt: str, *, phase: str, final_code_dir: Path, module_name: str,
-    append: RecorderAppend | None, timeout: int, tag_prefix: str,
+    append: RecorderAppend | None, timeout: int, tag_prefix: str, base_code_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[int], str]:
     source = parse_test_source(client.generate(prompt, system=SYSTEM))
     violations = check_test_source(source, allowed_modules=(module_name,))
@@ -417,14 +430,19 @@ def _phase(
             seqs.append(seq)
         return details, seqs, source
     tags = tag_tests(source, prefix=tag_prefix)
-    for r in run_tests(final_code_dir, source, name=f"test_verifier_{phase}.py", timeout=timeout):
-        d = {**r, "phase": phase, "spec_sentence": tags.get(r["name"], "")}
-        seq = _record(append, {"name": r["name"], "source": source, "passed": r["passed"], "phase": phase,
-                               "outcome": r["outcome"], "spec_sentence": d["spec_sentence"], "output": r["output"]})
+    results = run_tests(final_code_dir, source, name=f"test_verifier_{phase}.py", timeout=timeout)
+    details = [{**r, "phase": phase, "spec_sentence": tags.get(r["name"], "")} for r in results]
+    if base_code_dir is not None:
+        mark_weak_tests(details, base_code_dir, source, phase=phase, timeout=timeout)
+    for d in details:
+        payload = {"name": d["name"], "source": source, "passed": d["passed"], "phase": phase,
+                   "outcome": d["outcome"], "spec_sentence": d["spec_sentence"], "output": d["output"]}
+        if "weak" in d:
+            payload["weak"] = d["weak"]
+        seq = _record(append, payload)
         if seq is not None:
             d["seq"] = seq
             seqs.append(seq)
-        details.append(d)
     return details, seqs, source
 
 
@@ -440,8 +458,12 @@ def verify(
     all_records: list[Record] | None = None,
     recorder_append: RecorderAppend | None = None,
     timeout: int = 60,
+    base_code_dir: str | Path | None = None,
 ) -> VerifierResult:
     """Blind phase, then (optionally) probe phase. Each is its own model call.
+
+    ``base_code_dir`` (P3.12, optional): the code before the agent's change.
+    Tests that pass there too are flagged ``weak`` in the details.
 
     Raises:
         BlindnessViolation (a ValueError) if ``observed`` holds a CLAIMED record
@@ -457,14 +479,17 @@ def verify(
             raise BlindnessViolation("probe claim text leaked into the blind prompt")
 
     final_code_dir = Path(final_code_dir)
+    base = Path(base_code_dir) if base_code_dir else None
     details, seqs, _ = _phase(client, blind_prompt, phase="blind", final_code_dir=final_code_dir,
-                              module_name=module_name, append=recorder_append, timeout=timeout, tag_prefix="spec")
+                              module_name=module_name, append=recorder_append, timeout=timeout, tag_prefix="spec",
+                              base_code_dir=base)
 
     if probes:
         probe_prompt = render_probe_prompt(bi, module_name, probes)
         assert_blind(probe_prompt, all_records or observed, diff, allow=probes)
         d2, s2, _ = _phase(client, probe_prompt, phase="probe", final_code_dir=final_code_dir,
-                           module_name=module_name, append=recorder_append, timeout=timeout, tag_prefix="probe")
+                           module_name=module_name, append=recorder_append, timeout=timeout, tag_prefix="probe",
+                           base_code_dir=base)
         details += d2
         seqs += s2
 
@@ -479,7 +504,7 @@ def verify(
 
 
 __all__ = [
-    "BlindInput", "BlindnessViolation", "SYSTEM", "assert_blind", "build_blind_input", "is_test_path",
+    "BlindInput", "BlindnessViolation", "SYSTEM", "assert_blind", "build_blind_input", "is_test_path", "mark_weak_tests",
     "parse_test_source", "render_blind_prompt", "render_probe_prompt", "run_tests", "split_diff_by_file",
     "strip_test_files", "summarize_observed", "tag_tests", "verify",
 ]

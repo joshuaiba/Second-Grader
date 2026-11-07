@@ -123,13 +123,14 @@ def ground_truth(records: list[Record]) -> tuple[bool | None, int | None]:
 
 
 def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool, final_code: Path,
-                 append: Any | None, probes: list[str] | None = None) -> VerifierResult | None:
+                 append: Any | None, probes: list[str] | None = None,
+                 base_code: Path | None = None) -> VerifierResult | None:
     try:
         client = verifier.GeminiClient(offline=offline)
         return verifier.verify(
             task_spec(task), full_diff(records), schema.observed(records),
             final_code_dir=final_code, all_records=records, recorder_append=append, client=client,
-            probes=probes or None,
+            probes=probes or None, base_code_dir=base_code,
         )
     except (verifier.MissingApiKey, verifier.OfflineCacheMiss) as exc:
         _warn(f"verifier skipped: {exc}")
@@ -158,7 +159,8 @@ def print_report(mode: str, task: dict[str, Any], chain_ok: bool, first_bad: int
         if vr.passed + vr.failed == 0:
             print("verifier: NO COUNTABLE TESTS (generation rejected or every test errored); this does not block, but nothing was independently verified")
         for d in vr.details:
-            print(f"  {d.get('outcome', '?'):<7} {d.get('name')}  {d.get('spec_sentence', '')}")
+            weak = "  [weak: also passes on base code]" if d.get("weak") else ""
+            print(f"  {d.get('outcome', '?'):<7} {d.get('name')}  {d.get('spec_sentence', '')}{weak}")
     stamp = "MERGED" if decision.decision == "PASS" else "BLOCKED"
     print(f"\n{decision.decision} ({stamp})")
     for r in decision.reasons:
@@ -214,7 +216,7 @@ class _ChainAppender:
 
 
 def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool, final_code: Path,
-           out_dir: Path | None) -> int:
+           out_dir: Path | None, base_code: Path | None = None) -> int:
     """The whole pipeline on an existing trace: chain -> audit -> verify -> gate."""
     records = load_trace(trace)
     chain_ok, first_bad, report = chain_status(trace)
@@ -227,7 +229,8 @@ def replay(task: dict[str, Any], trace: Path, *, offline: bool, no_verify: bool,
         out = _copy_trace_for_results(task, Path(trace), out_dir)
         append = _ChainAppender(out)
 
-    vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append, probes=probes)
+    vr = None if no_verify else run_verifier(task, records, offline=offline, final_code=final_code, append=append,
+                                             probes=probes, base_code=base_code)
     gt_ok, gt_seq = ground_truth(records)
     decision = gate.decide(verdicts, vr, chain_ok, first_bad, claims=claims, ground_truth_ok=gt_ok, ground_truth_seq=gt_seq)
     if append is not None:
@@ -248,12 +251,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"no such task: {exc}", file=sys.stderr)
         return 1
     final_code = Path(args.final_code) if args.final_code else ROOT / task.get("repo", "demo_repo")
+    base_code = Path(args.base_code) if args.base_code else None
     out_dir = None if args.no_write else Path(args.out_dir)
 
     try:
         if args.replay:
             return replay(task, Path(args.replay), offline=args.offline, no_verify=args.no_verify,
-                          final_code=final_code, out_dir=out_dir)
+                          final_code=final_code, out_dir=out_dir, base_code=base_code)
     except verifier.BlindnessViolation as exc:
         print(f"error: refusing to call the verifier, its input is not blind: {exc}", file=sys.stderr)
         return 2
@@ -267,7 +271,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         trace = Path(run_task(task))  # P1 returns the trace path of the finished run
     except NotImplementedError as exc:
         return _not_implemented(exc)
-    return replay(task, trace, offline=args.offline, no_verify=args.no_verify, final_code=final_code, out_dir=out_dir)
+    return replay(task, trace, offline=args.offline, no_verify=args.no_verify, final_code=final_code, out_dir=out_dir,
+                  base_code=base_code)
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
@@ -309,6 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--offline", action="store_true", help="verifier uses its cache only; no network")
     run.add_argument("--no-verify", action="store_true", help="skip the blinded verifier")
     run.add_argument("--final-code", metavar="DIR", help="the agent's final code (default: the task's repo in this checkout)")
+    run.add_argument("--base-code", metavar="DIR", help="the code before the change; verifier tests passing there too are flagged weak")
     run.add_argument("--out-dir", default=str(ROOT / "traces"), help="where replay traces with verifier records go")
     run.add_argument("--no-write", action="store_true", help="do not write verifier records to a trace copy")
     run.set_defaults(func=cmd_run)
