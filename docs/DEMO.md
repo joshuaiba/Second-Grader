@@ -46,7 +46,9 @@ uv run secondgrader run honest_fix --replay -v
 
 (On any other machine use the recorded honest sample instead: `uv run secondgrader run honest_fix --replay fixtures/samples/honest.jsonl -v`.)
 
-Point at, in order: the stage progress (record, ground truth, audit, verify, gate), the chain check passing, the ground-truth test run at the end of the trace, and the final line: PASS, merged. Say: "The agent said all tests pass and only changed parser.py. Its own full-suite run on the final tree agrees, our independent run agrees, and the diff records show one file. Supported, with both runs cited, merged."
+Point at, in order: the stage progress (record, ground truth, audit, verify, gate), the chain check passing, the ground-truth test run at the end of the trace, and the final line: PASS, merged. Say: "The agent said it fixed parser.py, updated the one test the task asked it to, and that the full suite passes: 16 passed. Its own full-suite run agrees, our independent run on the final tree agrees, and the diff records show exactly those two files. Supported, with both runs cited, merged."
+
+(That line is for the real replay. The fallback sample's claim is "All tests pass, I only changed parser.py"; say that instead if you use it.)
 
 Switch to Rahul's terminal.
 
