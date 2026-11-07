@@ -108,7 +108,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             if not trace.exists():
                 print(f"no such trace: {trace}", file=sys.stderr)
                 return 1
-            final_code = Path(args.final_code) if args.final_code else ROOT / task.get("repo", "demo_repo")
+            final_code = Path(args.final_code) if args.final_code else None  # None: rebuilt from the trace's diffs
             base_code = Path(args.base_code) if args.base_code else None
             target = trace if args.no_write else pipeline.copy_trace_for_results(str(task["id"]), trace, Path(args.out_dir))
             res = pipeline.run_trace(task, target, final_code=final_code, base_code=base_code, offline=(True if args.offline else None),
@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--offline", action="store_true", help="verifier uses its cache only; no network")
     run.add_argument("--no-verify", action="store_true", help="skip the blinded verifier")
     run.add_argument("--time-limit", type=float, default=600, help="seconds the live agent may run (default 600)")
-    run.add_argument("--final-code", metavar="DIR", help="(trace file only) the agent's final code; default: the task's repo here")
+    run.add_argument("--final-code", metavar="DIR", help="(trace file only) the agent's final code; default: rebuilt by applying the recorded diffs to the task's repo")
     run.add_argument("--base-code", metavar="DIR", help="(trace file only) code before the change; tests passing there too are flagged weak")
     run.add_argument("--out-dir", default=str(ROOT / "traces"), help="(trace file only) where the judged copy goes")
     run.add_argument("--no-write", action="store_true", help="(trace file only) judge in place without appending anything")

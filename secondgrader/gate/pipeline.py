@@ -112,6 +112,8 @@ def audit_records(records: list[Record], task: dict[str, Any] | None = None, *,
         except NotImplementedError as exc:
             _warn(f"auditor.audit not implemented ({exc}); trying the basic functions")
         except TypeError as exc:
+            if "argument" not in str(exc):
+                raise  # a real TypeError inside the auditor, not a signature mismatch
             _warn(f"auditor.audit signature mismatch ({exc}); trying the basic functions")
     try:
         claims = auditor.extract_claims(records)
@@ -141,7 +143,51 @@ def full_diff(records: list[Record]) -> str:
     agent = [r for r in schema.observed(records) if r.kind == "diff" and not (r.payload or {}).get("ground_truth")]
     if not agent:
         agent = [r for r in schema.observed(records) if r.kind == "diff"]
-    return "".join(str(r.payload.get("diff", "")) for r in agent)
+    return _join_diffs(str(r.payload.get("diff", "")) for r in agent)
+
+
+def _join_diffs(chunks: Any) -> str:
+    """Concatenate per-file diffs so every file header starts on its own line."""
+    out = []
+    for c in chunks:
+        if not c:
+            continue
+        out.append(c if c.endswith("\n") else c + "\n")
+    return "".join(out)
+
+
+def final_diff(records: list[Record]) -> str:
+    """The base -> final diff: P1's ground-truth diff records when present, else the agent's diffs in order."""
+    gt = [r for r in schema.observed(records) if r.kind == "diff" and (r.payload or {}).get("ground_truth")]
+    if gt:
+        return _join_diffs(str(r.payload.get("diff", "")) for r in gt)
+    return full_diff(records)
+
+
+def materialize_final_code(records: list[Record], base_code: Path, dest: Path) -> tuple[bool, str]:
+    """Rebuild the agent's final tree: copy ``base_code`` to ``dest`` and apply the recorded diffs.
+
+    Returns ``(ok, message)``. On failure ``dest`` is left as a copy of the
+    base and the caller must not judge it as if it were the final code.
+    """
+    import shutil
+    import subprocess
+
+    shutil.copytree(base_code, dest, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "*.pyc"))
+    diff = final_diff(records)
+    if not diff.strip():
+        return True, "no diff records: final code equals base"
+    patch = dest / ".sg_final.patch"
+    patch.write_text(diff, encoding="utf-8")
+    try:
+        proc = subprocess.run(["git", "apply", "--whitespace=nowarn", "--unsafe-paths", str(patch)],
+                              cwd=dest, capture_output=True, text=True, timeout=60)
+    finally:
+        patch.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        return False, f"could not rebuild the final code from the recorded diffs: {proc.stderr.strip()[:300]}"
+    return True, "final code rebuilt from the recorded diffs"
 
 
 def ground_truth(records: list[Record]) -> tuple[bool | None, int | None]:
@@ -166,6 +212,14 @@ def run_verifier(task: dict[str, Any], records: list[Record], *, offline: bool |
     except (verifier.MissingApiKey, verifier.OfflineCacheMiss) as exc:
         if warn:
             warn(f"verifier skipped: {exc}")
+        return None
+    except verifier.BlindnessViolation as exc:
+        if warn:
+            warn(f"VERIFIER SKIPPED, BLINDNESS VIOLATION (bug in the verifier input builder, not the agent): {exc}")
+        return None
+    except Exception as exc:  # API errors, SDK import errors, subprocess failures: never abort after the agent ran
+        if warn:
+            warn(f"verifier skipped after an error: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -230,7 +284,7 @@ def run_trace(
     task: dict[str, Any],
     trace_path: str | Path,
     *,
-    final_code: str | Path,
+    final_code: str | Path | None = None,
     base_code: str | Path | None = None,
     work_dir: str | Path | None = None,
     branch: str | None = None,
@@ -247,6 +301,10 @@ def run_trace(
             (callers who want the original untouched copy it first, see
             :func:`copy_trace_for_results`).
         final_code / base_code: The agent's final code and the code before it.
+            When ``final_code`` is None it is rebuilt by applying the recorded
+            diffs to a copy of ``base_code`` (default: the task's repo in this
+            checkout); if that fails the verifier is skipped rather than
+            judging code the agent never produced.
         work_dir / branch: The throwaway git clone and the agent branch. When
             given, the gate acts in git (merge or quarantine).
         mode: ``"LIVE"`` only when the caller just ran the agent (run_live);
@@ -262,10 +320,23 @@ def run_trace(
         if on_stage:
             on_stage(name, detail)
 
+    import tempfile
+
     trace = Path(trace_path)
-    final = Path(final_code)
     base = Path(base_code) if base_code else None
     records = load_trace(trace)
+    tmp_final: tempfile.TemporaryDirectory[str] | None = None
+    final: Path | None = Path(final_code) if final_code else None
+    if final is None:
+        src = base or (ROOT / str(task.get("repo", "demo_repo")))
+        tmp_final = tempfile.TemporaryDirectory(prefix="sg-final-")
+        final = Path(tmp_final.name) / "final"
+        ok, msg = materialize_final_code(records, src, final)
+        if not ok:
+            warn(msg + "; verifier skipped")
+            no_verify = True
+        if base is None:
+            base = src
 
     stage("ground_truth", "reading the recorder's own test run")
     chain_ok, first_bad, report = chain_status(trace)
@@ -308,6 +379,8 @@ def run_trace(
             warn(f"git action failed: {exc}")
             git_outcome = "git action failed"
 
+    if tmp_final is not None:
+        tmp_final.cleanup()
     stage("done", decision.decision)
     return PipelineResult(
         task_id=str(task.get("id", "")), mode=mode, trace_path=str(trace), decision=decision,
@@ -364,5 +437,6 @@ def run_replay(task_id: str, *, offline: bool | None = None, no_verify: bool = F
 
 __all__ = [
     "STAGES", "ChainAppender", "PipelineResult", "audit_records", "chain_status", "copy_trace_for_results",
-    "full_diff", "ground_truth", "load_task", "run_live", "run_replay", "run_trace", "run_verifier", "task_spec",
+    "final_diff", "full_diff", "ground_truth", "load_task", "materialize_final_code", "run_live", "run_replay",
+    "run_trace", "run_verifier", "task_spec",
 ]

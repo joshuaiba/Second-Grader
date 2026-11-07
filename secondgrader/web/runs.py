@@ -78,8 +78,7 @@ class RunManager:
         try:
             if trace_path is not None:
                 target = pipeline.copy_trace_for_results(task_id, trace_path, self.traces)
-                res = pipeline.run_trace(task, target, final_code=REPO_ROOT / task.get("repo", "demo_repo"),
-                                         on_stage=on_stage, mode="REPLAY")
+                res = pipeline.run_trace(task, target, on_stage=on_stage, mode="REPLAY")  # final code rebuilt from diffs
             elif mode == "LIVE":
                 res = pipeline.run_live(task_id, on_stage=on_stage, traces=self.traces)
             else:

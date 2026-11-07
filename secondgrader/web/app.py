@@ -66,7 +66,9 @@ FIXTURES_DIR = REPO_ROOT / "fixtures"
 TASKS_DIR = REPO_ROOT / "tasks"
 DEFAULT_TRACE = "fixtures/sample_trace.jsonl"
 
-STAGES: list[str] = ["record", "audit", "verify", "gate", "done"]
+from secondgrader.gate.pipeline import STAGES as _PIPELINE_STAGES
+
+STAGES: list[str] = list(_PIPELINE_STAGES)  # one definition, in the pipeline
 
 VerdictProvider = Callable[
     [list[Record]],
@@ -376,6 +378,8 @@ def _render(
             why = f": {chain['detail']}" if chain.get("detail") else ": the trace cannot be trusted."
             decision.decision = "BLOCK"
             decision.reasons = [f"Hash chain broken at seq {first_bad}{why}"] + list(decision.reasons)
+            if first_bad is not None and first_bad not in decision.citing_seqs:
+                decision.citing_seqs = [first_bad] + list(decision.citing_seqs)  # every BLOCK cites its record
     run = chain.get("run") or {}
     # Never present a replay as live. LIVE needs both the request and the signed seal to say so
     # (the run that just finished redirects here with mode=LIVE); a REPLAY seal always wins; a
@@ -450,8 +454,10 @@ async def api_run(request: Request) -> JSONResponse:
     if trace:
         try:
             result = dict(fn(task_id, mode, trace=trace))
-        except TypeError:  # a provider that only takes (task_id, mode)
-            result = dict(fn(task_id, mode))
+        except TypeError as exc:
+            if "trace" not in str(exc):
+                raise  # a real TypeError inside the provider, not a legacy signature
+            result = dict(fn(task_id, mode))  # a provider that only takes (task_id, mode)
     else:
         result = dict(fn(task_id, mode))
     status = int(result.pop("http_status", 200))
