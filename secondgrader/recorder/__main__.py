@@ -3,6 +3,7 @@
     python -m secondgrader.recorder run <task> [--time-limit S] [--scripted]
     python -m secondgrader.recorder save-replay <run_dir>
     python -m secondgrader.recorder replay <task|replay_dir>
+    python -m secondgrader.recorder record-replays [task ...]     live run + save replay, all tasks by default
     python -m secondgrader.recorder verify <trace.jsonl> [--json]
     python -m secondgrader.recorder tamper <trace.jsonl> <seq> <field> <json value> [--rehash]
 """
@@ -31,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--scripted", action="store_true", help="use the scripted stand-in agent, not Muse Code")
     s = sub.add_parser("save-replay")
     s.add_argument("run_dir")
+    rr = sub.add_parser("record-replays")
+    rr.add_argument("tasks", nargs="*")
+    rr.add_argument("--time-limit", type=float, default=600)
     rp = sub.add_parser("replay")
     rp.add_argument("source")
     v = sub.add_parser("verify")
@@ -49,6 +53,18 @@ def main(argv: list[str] | None = None) -> int:
         res = run_task(a.task, time_limit=a.time_limit, agent_cmd=agent)
         print(json.dumps(asdict(res), indent=1))
         return 0
+    if a.cmd == "record-replays":
+        tasks = a.tasks or sorted(p.stem for p in (ROOT / "tasks").glob("*.yaml"))
+        failed = 0
+        for task in tasks:
+            try:
+                res = run_task(task, time_limit=a.time_limit)
+                out = save_replay(res.run_dir)
+                print(f"{task}: saved {out} (agent exit {res.agent_exit}, timed out {res.timed_out})")
+            except Exception as exc:  # noqa: BLE001  keep going; report every task
+                failed += 1
+                print(f"{task}: FAILED {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1 if failed else 0
     if a.cmd == "save-replay":
         print(save_replay(a.run_dir))
         return 0

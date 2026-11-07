@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .chain import seal_path, verify
 from .keys import load_or_create_key, public_hex
-from .runner import ROOT, RunResult, run_ground_truth
+from .runner import ROOT, RunResult, ensure_upstream, run_ground_truth
 from .writer import TraceWriter
 
 REPLAYS = ROOT / "replays"
@@ -57,7 +57,7 @@ def save_replay(run_dir: str | Path, dest: str | Path | None = None) -> Path:
             shutil.copyfile(src / name, out / name)
     meta = {k: getattr(result, k) for k in ("run_id", "task_id", "recorded_at", "branch", "base_commit",
                                              "base_tree", "final_tree", "final_commit", "agent_exit",
-                                             "timed_out")}
+                                             "timed_out", "upstream")}
     (out / "replay.json").write_text(json.dumps(meta, indent=1) + "\n")
     return out
 
@@ -104,7 +104,9 @@ def replay(task_or_path: str | Path, *, traces: Path | None = None, ground_truth
                        base_commit=meta["base_commit"], base_tree=meta["base_tree"],
                        final_tree=meta["final_tree"], final_commit=meta["final_commit"],
                        recorded_at=meta["recorded_at"], agent_exit=meta["agent_exit"],
-                       timed_out=meta["timed_out"], replayed_at=replayed_at)
+                       timed_out=meta["timed_out"], replayed_at=replayed_at,
+                       upstream=meta.get("upstream") if Path(meta.get("upstream") or "/nonexistent").exists()
+                       else str(ensure_upstream(traces=traces)))
     if ground_truth:
         result.ground_truth_seqs = run_ground_truth(result, writer)
     result.save()

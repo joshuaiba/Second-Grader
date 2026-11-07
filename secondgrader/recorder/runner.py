@@ -3,7 +3,7 @@
 One run = one throwaway clone, one recorder service, one trace:
 
     traces/
-      demo_upstream/            git repo made once from demo_repo/ (branch main)
+      demo_upstream-<hash>/     git repo made from demo_repo/ (branch main), one per version
       <run_id>/
         run.json                run_id, task_id, mode LIVE|REPLAY, recorded_at, commits, trees
         trace.jsonl (+ .seal.json)
@@ -18,6 +18,7 @@ merging is the gate's job.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,13 +45,17 @@ from .writer import TraceWriter
 
 ROOT = Path(__file__).resolve().parents[2]
 FORWARD = ROOT / "scripts" / "hooks" / "forward.py"
-HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-               "PostLLMCall", "Stop", "SubagentStop"]
+HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+               "PostToolUseFailure", "PostLLMCall", "Stop"]
 #: Hook timeout we configure in Muse Code (seconds). forward.py gives up at 1.5 s.
 HOOK_TIMEOUT_S = 2
 DEFAULT_MODEL = "muse-spark-1.3"
-#: Unverified until a real run: see docs/MUSE_HOOKS.md. Override with $SG_MUSE_FLAGS.
-DEFAULT_MUSE_FLAGS = ["--disable-sandbox", "--trust-workspace", "--disable-approval"]
+#: Confirmed on Muse Code 1.4.14 (scripts/hooks/README.md). Override with $SG_MUSE_FLAGS.
+#: --trust-workspace loads .muse/hooks.json; --disable-reminders turns off Muse Code's
+#: internal helper agents (noise and cost); the rest keep a headless run from waiting on input.
+DEFAULT_MUSE_FLAGS = ["--trust-workspace", "--disable-sandbox", "--disable-approval",
+                      "--disable-request-user-input", "--disable-reminders", "--disable-web-tools"]
+DEFAULT_MAX_STEPS = "40"
 GIT_ID = ["-c", "user.name=Second Grader", "-c", "user.email=recorder@secondgrader.local"]
 
 
@@ -80,6 +86,7 @@ class RunResult:
     timed_out: bool = False
     replayed_at: str | None = None
     ground_truth_seqs: list[int] = field(default_factory=list)
+    upstream: str = ""  # the demo repo whose main the gate merges into
 
     def save(self) -> None:
         Path(self.run_dir, "run.json").write_text(json.dumps(asdict(self), indent=1) + "\n")
@@ -100,16 +107,38 @@ def agent_prompt(task: dict[str, Any]) -> str:
     return "\n".join(ln for ln in text.splitlines() if ln.strip()).strip()
 
 
+def demo_repo_hash(root: Path = ROOT) -> str:
+    """Short content hash of ``demo_repo/`` (paths and bytes; caches ignored)."""
+    h = hashlib.sha256()
+    base = root / "demo_repo"
+    for f in sorted(base.rglob("*")):
+        rel = f.relative_to(base)
+        if f.is_file() and not any(part in {"__pycache__", ".pytest_cache"} for part in rel.parts) \
+                and f.suffix != ".pyc":
+            h.update(str(rel).encode() + b"\0" + f.read_bytes() + b"\0")
+    return h.hexdigest()[:12]
+
+
 def ensure_upstream(root: Path = ROOT, traces: Path | None = None) -> Path:
-    """The demo repo as its own git repository, created once from ``demo_repo/``."""
-    up = (traces or root / "traces") / "demo_upstream"
+    """The demo repo as its own git repository (branch ``main``), one per version of ``demo_repo/``.
+
+    The gate merges passing runs into this repo's ``main``. Naming it by content
+    hash means a changed ``demo_repo/`` gets a fresh upstream instead of stale code.
+    """
+    up = (traces or root / "traces") / f"demo_upstream-{demo_repo_hash(root)}"
     if not (up / ".git").exists():
-        shutil.copytree(root / "demo_repo", up,
+        tmp = up.with_name(up.name + f".tmp{os.getpid()}")
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(root / "demo_repo", tmp,
                         ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc"))
-        (up / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n*.pyc\n")
-        subprocess.run(["git", "init", "-q", "-b", "main", str(up)], check=True)
-        _git(up, "add", "-A")
-        _git(up, "commit", "-qm", "demo repo base")
+        (tmp / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n*.pyc\n")
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp)], check=True)
+        _git(tmp, "add", "-A")
+        _git(tmp, "commit", "-qm", "demo repo base")
+        try:
+            os.rename(tmp, up)  # atomic: two runs racing both end up with one upstream
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
     return up
 
 
@@ -126,11 +155,26 @@ def write_hooks_config(work: Path, sock: Path) -> Path:
     return path
 
 
-def muse_command(prompt: str) -> list[str]:
+def muse_command(prompt: str, session_id: str) -> list[str]:
     flags = os.environ.get("SG_MUSE_FLAGS")
     extra = flags.split() if flags else DEFAULT_MUSE_FLAGS
     model = os.environ.get("SG_MUSE_MODEL", DEFAULT_MODEL)
-    return ["muse", "exec", "--json", "--model", model, *extra, prompt]
+    return ["muse", "exec", "--json", "--model", model, "--session-id", session_id,
+            "--reasoning-effort", os.environ.get("SG_MUSE_EFFORT", "medium"),
+            "--max-model-steps", os.environ.get("SG_MUSE_MAX_STEPS", DEFAULT_MAX_STEPS), *extra, prompt]
+
+
+def dotenv(root: Path = ROOT) -> dict[str, str]:
+    """``KEY=value`` lines from ``.env`` (no expansion). Missing file -> {}."""
+    out: dict[str, str] = {}
+    path = root / ".env"
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip("'\"")
+    return out
 
 
 def _launch(cmd: list[str], work: Path, run_dir: Path, time_limit: float,
@@ -153,31 +197,6 @@ def _launch(cmd: list[str], work: Path, run_dir: Path, time_limit: float,
                 except subprocess.TimeoutExpired:
                     continue
             return proc.returncode, True
-
-
-def _stdout_messages(path: Path) -> list[str]:
-    """Best-effort fallback: assistant text from ``muse exec --json`` events (format unverified)."""
-    texts = []
-    if not path.exists():
-        return texts
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(ev, dict):
-            continue
-        item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
-        kind = str(ev.get("type") or ev.get("event") or item.get("type") or "").lower()
-        role = str(ev.get("role") or item.get("role") or "").lower()
-        if "assistant" in kind or "agent_message" in kind or role == "assistant":
-            for src in (ev, item):
-                val = next((src[k] for k in ("text", "message", "content")
-                            if isinstance(src.get(k), str) and src[k].strip()), None)
-                if val:
-                    texts.append(val)
-                    break
-    return texts
 
 
 def _export(work: Path, tree: str, dest: Path) -> None:
@@ -265,30 +284,35 @@ def run_task(task_id: str, *, time_limit: float = 600, agent_cmd: list[str] | No
     trace = run_dir / "trace.jsonl"
     result = RunResult(run_id=run_id, task_id=task_id, mode="LIVE", run_dir=str(run_dir),
                        trace_path=str(trace), work_dir=str(work), branch=branch,
-                       base_commit=base_commit, base_tree=base_tree, recorded_at=_now())
+                       base_commit=base_commit, base_tree=base_tree, recorded_at=_now(), upstream=str(up))
     writer = TraceWriter(trace, key)
     writer.start({"run_id": run_id, "task_id": task_id, "mode": "LIVE", "recorded_at": result.recorded_at,
                   "base_commit": base_commit, "base_tree": base_tree,
                   "agent": "scripted" if agent_cmd else "muse-code"})
 
     recorder = Recorder(trace, key, repo=work)
+    recorder.known_prompts.add(prompt)
     server = RecorderServer(sock, recorder)
     server.start_background()
     try:
         writer.append("prompt", {"task_id": task_id, "text": prompt, "source": "runner"})
-        cmd = [a.replace("{prompt}", prompt) for a in agent_cmd] if agent_cmd else muse_command(prompt)
+        session_id = str(uuid.uuid4())
+        cmd = [a.replace("{prompt}", prompt) for a in agent_cmd] if agent_cmd else muse_command(prompt, session_id)
         env = {k: v for k, v in os.environ.items() if not k.startswith("SG_")}  # no key path, no socket
+        if not agent_cmd and "META_API_KEY" not in env:
+            key_value = dotenv(root).get("META_API_KEY")
+            if not key_value:
+                raise RuntimeError("META_API_KEY is not set (environment or .env)")
+            env["META_API_KEY"] = key_value  # only this one; no other .env secrets reach the agent
         result.agent_exit, result.timed_out = _launch(cmd, work, run_dir, time_limit, env)
     finally:
         server.close()
         shutil.rmtree(sock.parent, ignore_errors=True)
 
-    recorded = {r.get("payload", {}).get("text") for r in map(json.loads, trace.read_text().splitlines())
-                if r["kind"] == "model_message"}
-    for text in _stdout_messages(run_dir / "agent_stdout.jsonl"):
-        if text not in recorded:
-            writer.append("model_message", {"text": text, "source": "agent_stdout"})
-            recorded.add(text)
+    if not agent_cmd:
+        # Muse Code's own transcript, kept next to our trace for humans (not evidence).
+        subprocess.run(["muse", "export", "--session", session_id, "--out", str(run_dir / "muse_session.json")],
+                       cwd=work, capture_output=True, timeout=60, check=False)
     if result.timed_out:
         writer.append("tool_output", {"tool": "runner", "exit_code": result.agent_exit,
                                       "content": f"agent stopped at the {time_limit:.0f}s time limit"})

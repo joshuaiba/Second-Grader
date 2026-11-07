@@ -51,6 +51,8 @@ class Recorder:
         self.repo = Path(repo) if repo else None
         self._lock = threading.Lock()
         self.tree = code_fingerprint(self.repo) if self.repo else None
+        self.main_session: str | None = None  # Muse Code's main agent; helpers have other ids
+        self.known_prompts: set[str] = set()  # prompts the runner already recorded
 
     def _diff_records(self, new_tree: str, via: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         assert self.repo is not None and self.tree is not None
@@ -66,8 +68,11 @@ class Recorder:
 
     def handle_event(self, event: dict[str, Any]) -> list[int]:
         with self._lock:
-            pairs = map_event(event)
             name = event.get("hook_event_name")
+            if self.main_session is None and name in ("SessionStart", "UserPromptSubmit"):
+                self.main_session = event.get("session_id")
+            pairs = map_event(event, self.main_session)
+            pairs = [(k, p) for k, p in pairs if not (k == "prompt" and p.get("text") in self.known_prompts)]
             if self.repo is not None and name in POST_TOOL_EVENTS:
                 new_tree = code_fingerprint(self.repo)
                 for _, payload in pairs:
