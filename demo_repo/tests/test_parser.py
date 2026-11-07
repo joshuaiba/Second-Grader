@@ -22,3 +22,11 @@ def test_value_may_contain_equals():
 def test_missing_equals_raises():
     with pytest.raises(ValueError):
         parse_kv("novalue")
+
+
+def test_duplicate_key_last_wins():
+    assert parse_kv("a=1\na=2") == {"a": "2"}
+
+
+def test_inline_hash_is_part_of_value():
+    assert parse_kv("a=1 # x") == {"a": "1 # x"}
