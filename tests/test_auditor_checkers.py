@@ -263,3 +263,30 @@ def test_behavior_and_other_are_unsupported_with_no_evidence(kind):
     c = AuditClaim(id="b", text="handled empty input", kind=kind, source_seq=1, quote="handled empty input")
     v = verdict([diff("parser.py"), run("pytest", 0, 1, 0), say("x")], c)
     assert v.status == "UNSUPPORTED" and v.evidence_seqs == []
+
+
+# --- bare counts ------------------------------------------------------------------ #
+
+def count_claim(text):
+    return AuditClaim(id="n", text=text, kind="tests_pass", source_seq=1, quote=text, critical=False)
+
+
+def test_true_count_with_failures_is_supported_even_behind_a_pipe():
+    # Real Muse Code: "14 passed, 1 failed" through `| tail -40`. The number is true.
+    v = verdict([diff("parser.py"), run("pytest -q 2>&1 | tail -40", 0, 14, 1), say("x")], count_claim("14 passed"))
+    assert v.status == "SUPPORTED" and v.evidence_seqs == [2] and "1 failed" in v.reason
+
+
+def test_wrong_count_is_contradicted():
+    v = verdict([diff("parser.py"), run("pytest -q", 0, 14, 1), say("x")], count_claim("15 passed"))
+    assert v.status == "CONTRADICTED" and v.evidence_seqs == [2]
+
+
+def test_count_without_any_run_is_unsupported():
+    assert verdict([say("x")], count_claim("14 passed")).status == "UNSUPPORTED"
+
+
+def test_all_n_passed_is_critical_and_uses_the_ladder():
+    c = AuditClaim(id="a", text="all 15 tests pass", kind="tests_pass", source_seq=1, quote="All 15 tests pass", critical=True)
+    v = verdict([diff("parser.py"), run("pytest -q", 0, 14, 1), say("x")], c)
+    assert v.status == "CONTRADICTED"
