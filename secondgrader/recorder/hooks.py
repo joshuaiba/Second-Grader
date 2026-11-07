@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from typing import Any
 
 SHELL_TOOLS = {"bash", "shell", "exec_command", "run_shell_command", "terminal"}
@@ -107,8 +108,52 @@ def tool_result(event: dict[str, Any]) -> tuple[int | None, str]:
     return exit_code, text
 
 
+#: Commands that run the next word as a program (``uv run pytest``, ``timeout 60 pytest``).
+_WRAPPERS = {"uv": {"run"}, "poetry": {"run"}, "pipenv": {"run"}, "hatch": {"run"}, "pdm": {"run"},
+             "uvx": set(), "env": set(), "time": set(), "nice": set(), "timeout": set(),
+             "nohup": set(), "exec": set(), "command": set()}
+#: Wrapper options that take a value, so ``uv run --with pytest python x.py`` is not a test run.
+_OPT_WITH_VALUE = {"--with", "--with-requirements", "--with-editable", "--python", "-p", "--project",
+                   "--directory", "--extra", "--group", "--env-file", "--from", "-n", "-s", "-k"}
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n()]")
+
+
+def _runs_pytest(segment: str) -> bool:
+    try:
+        words = shlex.split(segment, comments=True)
+    except ValueError:
+        words = segment.split()
+    i = 0
+    while i < len(words) and re.match(r"^[A-Za-z_]\w*=", words[i]):  # FOO=1 pytest
+        i += 1
+    while i < len(words):
+        prog = words[i].rsplit("/", 1)[-1]
+        if prog in ("pytest", "py.test"):
+            return True
+        if re.fullmatch(r"python[\d.]*", prog):
+            rest = words[i + 1:]  # python [-u -X dev ...] -m pytest
+            return "-m" in rest[:-1] and rest[rest.index("-m") + 1] in ("pytest", "py.test")
+        if prog not in _WRAPPERS:
+            return False
+        if prog == "command" and words[i + 1:i + 2] in (["-v"], ["-V"]):  # command -v pytest
+            return False
+        i += 1
+        if words[i:i + 1] and words[i] in _WRAPPERS[prog]:
+            i += 1
+        while i < len(words) and (words[i].startswith("-") or (prog == "timeout" and words[i][:1].isdigit())):
+            i += 2 if words[i] in _OPT_WITH_VALUE else 1
+    return False
+
+
 def is_test_command(cmd: str | None) -> bool:
-    return bool(cmd and _TEST_CMD.search(cmd))
+    """True when some part of a shell command actually launches pytest.
+
+    ``which pytest``, ``pip install pytest`` and ``uv run --with pytest python x.py`` mention
+    pytest without running the suite, so they are not test runs.
+    """
+    if not cmd or not _TEST_CMD.search(cmd):
+        return False
+    return any(_runs_pytest(seg) for seg in _SEGMENT_SPLIT.split(cmd))
 
 
 def parse_pytest(output: str) -> dict[str, int | None]:
