@@ -27,6 +27,8 @@ def _set_path(obj: dict[str, Any], dotted: str, value: Any) -> None:
         obj = obj[part]
     if parts[-1] not in obj:
         raise KeyError(f"no field {dotted!r} in record")
+    if obj[parts[-1]] == value:
+        raise KeyError(f"{dotted!r} already equals {value!r}: nothing would change")
     obj[parts[-1]] = value
 
 
