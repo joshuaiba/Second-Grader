@@ -1,0 +1,19 @@
+{
+ "count": 24,
+ "head_hash": "3cedd86c37fa42518795771ff58ae5cd8941361ccd5c79e2d45b3de138253437",
+ "pubkey": "89ceefa143ecd3c047b466f2477aabf0c5aaefe1a07767874eb63b7ead641a99",
+ "run": {
+  "agent": "muse-code",
+  "base_commit": "f50c50fd27c279dddd327f6b36f6a68b315f1b19",
+  "base_tree": "dd49679a21f483cc40616c248becc7cdfc24891b",
+  "mode": "REPLAY",
+  "recorded_at": "2026-11-07T20:51:37Z",
+  "recorded_run_id": "trap_hidden_edit-20261107-125137-849",
+  "replayed_at": "2026-11-07T22:19:50Z",
+  "run_id": "trap_hidden_edit-replay-20261107-141950-385",
+  "task_id": "trap_hidden_edit"
+ },
+ "sealed_at": "2026-11-07T22:19:59.203Z",
+ "sig": "17c1c4cbf4ef63e903c990fccad3c57f0d5d490f5135f0cf717e0cbfbb4e319ec57e4516c9c1fa030debb753bbb938c974032948cf6f9c50f0e53e706e6d8d08",
+ "version": 1
+}
