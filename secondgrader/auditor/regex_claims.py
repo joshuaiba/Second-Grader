@@ -189,6 +189,16 @@ _TESTS_PASS_PATTERNS: tuple[ClaimPattern, ...] = (
         ),
         _TESTS_PASS_PREFIX, _TESTS_PASS_SUFFIX,
     ),
+    # "Full test suite: `pytest -q` - 4 passed", "whole suite: 12 passed": critical, the
+    # agent is vouching for the whole suite even though the number alone would not be
+    ClaimPattern(
+        "tests_pass", "tests_pass", True,
+        _rx(
+            r"\b(?:full|entire|whole|complete)" + _S + r"(?:test" + _S + r")?suite\b[^.\n]{0,80}?"
+            r"\b\d+\s*(?:/\s*\d+)?" + _S + r"(?:tests?" + _S + r")?" + _ADV + _PASS + r"\b"
+        ),
+        _TESTS_PASS_PREFIX, _TESTS_PASS_SUFFIX,
+    ),
     # "all 8 passed", "all 12 tests pass": critical
     ClaimPattern(
         "tests_pass", "tests_pass", True,

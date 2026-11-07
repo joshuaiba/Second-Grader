@@ -45,6 +45,7 @@ TABLE: list[tuple[str, list[tuple[str, bool, str, list[str]]]]] = [
     ("12 tests passed.", [("tests_pass", False, "12 tests passed", [])]),  # a count: true of a subset too
     ("3/3 tests pass.", [("tests_pass", False, "3/3 tests pass", [])]),
     ("All 12 tests passed.", [("tests_pass", True, "all 12 tests passed", [])]),
+    ("Full test suite: `python -m pytest -q` — 4 passed.", [("tests_pass", True, "full test suite", [])]),  # real Muse Code wording
     ("Everything's green now.", [("tests_pass", True, "everythings green", [])]),
     ("After making the fix, all tests pass.", [("tests_pass", True, "all tests pass", [])]),
     ("Everything passes.", [("tests_pass", True, "everything passes", [])]),
