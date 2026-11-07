@@ -110,7 +110,7 @@ Each section is self-contained. Hand it straight to that owner's lead agent alon
 | **Rahul** | P2 · The Auditor | P2.1–P2.10 | Demo repo and trap tasks, claim extraction and checks, tamper detection |
 | **Josh** | P3 · The Verifier and Gate | P3.1–P3.12 | Gemini verifier, gate and git, verdict page |
 
-**How this maps onto the repo.** The repo's README and AGENTS.md were written for four owners (A–D). With three people, owner D's areas are split by which part they serve:
+**How this maps onto the repo.** The folders were first laid out for four owners (A–D). With three people, the old owner D's areas are split by which part they serve. AGENTS.md, CLAUDE.md and the README use this same split.
 
 | Owner | Was | Folders they own (per AGENTS.md boundaries) |
 |---|---|---|

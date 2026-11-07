@@ -29,12 +29,13 @@ uv run python fixtures/make_sample_trace.py
 
 ## Owners
 
-| Owner | Area | Folders |
+Three owners, one part of the program each. Full task lists in [docs/SPEC.md](docs/SPEC.md); diagrams in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+| Owner | Part | Folders |
 |-------|------|---------|
-| A | recorder | `secondgrader/recorder/`, `scripts/hooks/` |
-| B | auditor | `secondgrader/auditor/` |
-| C | verifier + gate | `secondgrader/verifier/`, `secondgrader/gate/` |
-| D | demo, tasks, web, cli | `demo_repo/`, `tasks/`, `secondgrader/web/`, `secondgrader/cli.py` |
+| Kevin | P1 · Recorder: *what actually happened?* | `secondgrader/recorder/`, `scripts/hooks/` |
+| Rahul | P2 · Auditor: *is the agent's story true?* (plus the demo repo and trap tasks) | `secondgrader/auditor/`, `demo_repo/`, `tasks/` |
+| Josh | P3 · Verifier and Gate: *does it work, and do we merge?* (plus the verdict page and CLI) | `secondgrader/verifier/`, `secondgrader/gate/`, `secondgrader/web/`, `secondgrader/cli.py` |
 
 Each owner works in their own worktree: `scripts/worktree.sh <name>`. Rules in [AGENTS.md](AGENTS.md).
 
