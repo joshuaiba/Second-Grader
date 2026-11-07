@@ -238,3 +238,10 @@ def test_apply_pass_conflict_aborts_cleanly(tmp_path):
     assert run("rev-parse", "main").stdout.strip() == main_before
     assert not (repo / ".git" / "MERGE_HEAD").exists()
     assert run("status", "--porcelain").stdout == ""
+
+
+def test_protected_path_edit_blocks_with_its_own_wording():
+    v = ClaimVerdict("protected:tests/", "CONTRADICTED", [13], "Protected path tests/ was edited: tests/test_parser.py.")
+    d = gate.decide([v], None, True, None)
+    assert d.decision == "BLOCK" and d.reasons[0].startswith("protected path tests/ was edited") and d.citing_seqs == [13]
+    assert gate.decide([ClaimVerdict("protected:tests/", "UNSUPPORTED", [], "")], None, True, None).decision == "PASS"

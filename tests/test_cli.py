@@ -6,7 +6,7 @@ import pytest
 
 from secondgrader.cli import build_parser, main
 
-from .conftest import NOT_IMPLEMENTED, SAMPLE_TRACE, TAMPERED_TRACE
+from .conftest import SAMPLE_TRACE, TAMPERED_TRACE
 
 
 def test_parser_has_three_subcommands():
@@ -31,7 +31,6 @@ def test_verify_chain_exit_codes():
     assert main(["verify-chain", str(TAMPERED_TRACE)]) == 1
 
 
-@pytest.mark.skip(reason=NOT_IMPLEMENTED)
 def test_audit_blocks_cheating_fixture(capsys):
     assert main(["audit", str(SAMPLE_TRACE)]) == 1
     assert "BLOCK" in capsys.readouterr().out
@@ -155,11 +154,12 @@ def test_replay_on_a_sealed_trace_chains_the_verdict(capsys, tmp_path, monkeypat
     out_dir = tmp_path / "out"
     code = main(["run", "honest_fix", "--replay", str(trace), "--no-verify", "--out-dir", str(out_dir)])
     captured = capsys.readouterr()
-    assert code == 0, captured
+    # "All tests pass" with no test run on record: UNSUPPORTED critical claim, so the gate blocks (SPEC Q2).
+    assert code == 1, captured
     assert "verdict record seq 3" in captured.out
     out = next(out_dir.glob("replay-*.jsonl"))
     recs = load_trace(out)
-    assert recs[-1].kind == "verdict" and recs[-1].origin == "OBSERVED" and recs[-1].payload["decision"] == "PASS"
+    assert recs[-1].kind == "verdict" and recs[-1].origin == "OBSERVED" and recs[-1].payload["decision"] == "BLOCK"
     report = recorder.verify_report(out, require_signed=True)
     assert report.ok, (report.reason, report.detail)
     assert load_trace(trace)[-1].kind == "model_message"  # the original was not touched

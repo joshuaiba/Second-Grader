@@ -97,3 +97,18 @@ def test_seal_mode_overrides_the_label(run_env):
     # run_trace was told mode=res.mode ("LIVE"), and the seal agrees; a REPLAY seal would win over any label.
     assert res.mode == "LIVE" and res.chain_report.run["mode"] == "LIVE"
     assert isinstance(res.decision, GateDecision)
+
+
+def test_reauditing_a_live_recorded_trace_is_a_replay(run_env, tmp_path):
+    real = FIXTURES / "real" / "honest_fix.jsonl"
+    if not real.exists():
+        pytest.skip("fixtures/real not present")
+    trace = tmp_path / "t.jsonl"
+    trace.write_bytes(real.read_bytes())
+    seal = real.with_name(real.name + ".seal.json")
+    trace.with_name(trace.name + ".seal.json").write_bytes(seal.read_bytes())
+    res = pipeline.run_trace(pipeline.load_task("honest_fix"), trace, final_code=FIXTURES.parent / "demo_repo",
+                             no_verify=True, chain_results=False)
+    assert res.chain_report.run["mode"] == "LIVE"   # the recording was live...
+    assert res.mode == "REPLAY"                     # ...but judging the recording now is a replay
+    assert res.chain_ok and res.chain_report.signed

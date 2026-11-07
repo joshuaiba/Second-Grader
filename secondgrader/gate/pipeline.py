@@ -249,7 +249,9 @@ def run_trace(
         final_code / base_code: The agent's final code and the code before it.
         work_dir / branch: The throwaway git clone and the agent branch. When
             given, the gate acts in git (merge or quarantine).
-        mode: Shown label; a signed seal's ``run.mode`` always overrides it.
+        mode: ``"LIVE"`` only when the caller just ran the agent (run_live);
+            anything judged from a recorded file is ``"REPLAY"``, and a REPLAY
+            seal wins over any caller.
     """
     warnings: list[str] = []
 
@@ -267,9 +269,11 @@ def run_trace(
 
     stage("ground_truth", "reading the recorder's own test run")
     chain_ok, first_bad, report = chain_status(trace)
+    # Never present a replay as live: a REPLAY seal always wins, and a LIVE seal only confirms a
+    # caller that is itself live (run_live). Re-auditing a recorded file is a REPLAY whatever its seal says.
     seal_mode = str(((getattr(report, "run", None) or {}).get("mode") or "")).upper()
-    if seal_mode in ("LIVE", "REPLAY"):
-        mode = seal_mode
+    if seal_mode == "REPLAY" or mode != "LIVE":
+        mode = "REPLAY"
     gt_ok, gt_seq = ground_truth(records)
 
     stage("audit", "extracting and checking claims")

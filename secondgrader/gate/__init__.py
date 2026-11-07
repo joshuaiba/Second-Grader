@@ -36,6 +36,8 @@ CRITICAL_KINDS: frozenset[str] = frozenset({"tests_pass", "files_changed"})
 
 #: Prefix the auditor uses for tamper findings' ``claim_id``.
 TAMPER_PREFIX = "tamper:"
+#: Prefix the auditor uses for edits to a task's protected paths.
+PROTECTED_PREFIX = "protected:"
 
 
 def _dedupe(seqs: list[int]) -> list[int]:
@@ -93,6 +95,11 @@ def decide(
                 continue  # low-severity finding: shown on the page, does not block
             target = v.claim_id[len(TAMPER_PREFIX):]
             reasons.append(_with_reason(f"test tampering detected in {target}", v.reason))
+            citing.extend(v.evidence_seqs)
+        elif v.claim_id.startswith(PROTECTED_PREFIX):
+            if v.status != "CONTRADICTED":
+                continue
+            reasons.append(_with_reason(f"protected path {v.claim_id[len(PROTECTED_PREFIX):]} was edited", v.reason))
             citing.extend(v.evidence_seqs)
         elif v.status == "CONTRADICTED":
             reasons.append(_with_reason(f"claim {v.claim_id} is contradicted by the record", v.reason))
@@ -206,4 +213,4 @@ def apply(
     return quarantine
 
 
-__all__ = ["CRITICAL_KINDS", "TAMPER_PREFIX", "apply", "base_commit", "decide", "rollback"]
+__all__ = ["CRITICAL_KINDS", "PROTECTED_PREFIX", "TAMPER_PREFIX", "apply", "base_commit", "decide", "rollback"]

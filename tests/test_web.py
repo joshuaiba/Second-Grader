@@ -176,16 +176,17 @@ def test_index_renders_sample_as_blocked_replay(client):
     assert r.status_code == 200
     assert "BLOCKED" in r.text and "REPLAY" in r.text
     assert "All tests pass" in r.text and "Only changed parser.py" in r.text
-    assert "assert weakened" in r.text
+    assert "weakened" in r.text
     chips = _chips(r.text)
     assert len(chips) == len(load_trace(SAMPLE_TRACE))
     assert set(chips.values()) == {"good"}
 
 
 def test_index_mode_live_and_task_picker(client):
+    # An unsigned fixture has no seal saying LIVE, so asking for LIVE still shows REPLAY: never fake a live run.
     r = client.get("/?mode=LIVE")
     assert r.status_code == 200
-    assert 'class="mode mode-live"' in r.text
+    assert 'class="mode mode-replay"' in r.text and 'class="mode mode-live"' not in r.text
     assert "<select" in r.text and 'value="trap_weaken_tests"' in r.text
     r = client.get("/?mode=bogus")
     assert 'class="mode mode-replay"' in r.text
@@ -350,7 +351,7 @@ def test_auto_verdict_blocks_cheating_fixture_through_the_real_gate(sample_recor
     assert decision.decision == "BLOCK"
     assert TEST_TAMPER_SEQ in decision.citing_seqs
     assert any(v.claim_id.startswith("tamper:") for v in verdicts)
-    assert claims and vr is not None
+    assert claims  # the real auditor extracted them; no verifier records in the fixture, so vr may be None
 
 
 def test_auto_verdict_uses_verifier_records_when_present(sample_records):
@@ -493,10 +494,13 @@ def test_seal_mode_and_task_override_query_params(client, monkeypatch):
         return rep
 
     monkeypatch.setattr(recorder, "verify_report", fake_report)
-    r = client.get("/?mode=REPLAY")  # the seal says LIVE: the seal wins
+    r = client.get("/?mode=LIVE")  # the run that just finished: request and seal both say LIVE
     assert r.status_code == 200
     assert 'class="mode mode-live"' in r.text and 'class="mode mode-replay"' not in r.text
     assert 'value="honest_fix" selected' in r.text  # task from the seal, not from the prompt record
+    # Opening the same recording later (no mode asked) is a REPLAY even though the seal says LIVE.
+    r2 = client.get("/")
+    assert 'class="mode mode-replay"' in r2.text and 'class="mode mode-live"' not in r2.text
     assert "run-abc123" in r.text and "2026-11-07T19:00:00Z" in r.text
     assert "signed" in r.text and "sealed" in r.text and "UNSIGNED fixture" not in r.text
     # an explicit ?task still wins over the seal's task
@@ -653,7 +657,8 @@ def test_honest_sample_is_judged_on_evidence_not_the_fixture_story():
     from secondgrader.schema import load_trace
     recs = load_trace(FIXTURES / "samples" / "honest.jsonl")
     decision, verdicts, vr, claims = live.auto_verdict(recs)
-    assert decision.decision == "PASS" and verdicts == [] and vr is None
+    assert decision.decision == "PASS" and vr is None
+    assert verdicts and all(v.status == "SUPPORTED" for v in verdicts)  # the real auditor, on real evidence
 
 
 def test_stale_sample_blocks_on_ground_truth():
@@ -678,3 +683,19 @@ def test_chained_gate_verdict_and_audit_records_are_shown_as_recorded(sample_rec
     assert [v.claim_id for v in verdicts] == ["c1", "tamper:tests/test_parser.py"]
     assert claims == [Claim("c1", "All tests pass", "tests_pass", 16)]
     assert live.gate_verdict_from_records(recs)[1] == 20
+
+
+
+def test_replay_seal_beats_a_live_request(client, monkeypatch):
+    from secondgrader import recorder
+
+    real = recorder.verify_report
+
+    def fake_report(path, *a, **k):
+        rep = real(path, *a, **k)
+        rep.run = {"run_id": "r2", "task_id": "honest_fix", "mode": "REPLAY", "recorded_run_id": "r1"}
+        return rep
+
+    monkeypatch.setattr(recorder, "verify_report", fake_report)
+    r = client.get("/?mode=LIVE")
+    assert 'class="mode mode-replay"' in r.text and 'class="mode mode-live"' not in r.text

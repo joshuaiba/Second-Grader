@@ -377,10 +377,11 @@ def _render(
             decision.decision = "BLOCK"
             decision.reasons = [f"Hash chain broken at seq {first_bad}{why}"] + list(decision.reasons)
     run = chain.get("run") or {}
-    # The signed seal is the truth about how the trace was made: it beats ?mode=.
+    # Never present a replay as live. LIVE needs both the request and the signed seal to say so
+    # (the run that just finished redirects here with mode=LIVE); a REPLAY seal always wins; a
+    # recorded file opened later is a REPLAY whatever its seal says.
     seal_mode = str(run.get("mode") or "").upper()
-    if seal_mode in web.MODES:
-        mode = seal_mode
+    mode = "LIVE" if (mode == "LIVE" and seal_mode == "LIVE") else "REPLAY"
     tasks = list_tasks()
     task_title = ""
     if not task_id and run.get("task_id"):
