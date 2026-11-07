@@ -342,7 +342,7 @@ def test_map_event_shapes():
 @pytest.fixture
 def run_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SG_SIGNING_KEY_PATH", str(tmp_path / "keys" / "k.pem"))
-    monkeypatch.setenv("SG_LATENCY_FILE", str(tmp_path / "lat.json"))
+    monkeypatch.setenv("SCRIPTED_LATENCY_FILE", str(tmp_path / "lat.json"))
     return tmp_path
 
 
@@ -413,7 +413,9 @@ def test_replay_is_labelled_and_verified(run_env):
     rep = replay(saved, traces=run_env / "traces")
     assert rep.mode == "REPLAY" and rep.recorded_at == live.recorded_at and rep.replayed_at
     assert rep.final_tree == live.final_tree
-    assert recorder.verify_report(rep.trace_path).ok
+    rep_report = recorder.verify_report(rep.trace_path, expect_run_id=rep.run_id)
+    assert rep_report.ok and rep_report.run["mode"] == "REPLAY"  # labelled in the signed seal
+    assert rep_report.run["recorded_at"] == live.recorded_at
     head = subprocess.run(["git", "-C", rep.work_dir, "rev-parse", "HEAD"], capture_output=True, text=True,
                           check=True).stdout.strip()
     assert head == live.final_commit
@@ -427,3 +429,125 @@ def test_replay_is_labelled_and_verified(run_env):
     snap.write_text("\n".join(lines) + "\n")
     with pytest.raises(ValueError, match="fails verification"):
         replay(saved, traces=run_env / "traces")
+
+
+# --------------------------------------------------------------------------- #
+# Regressions from the P1 verification pass
+# --------------------------------------------------------------------------- #
+
+from secondgrader.recorder.keys import load_or_create_key as _lok  # noqa: E402
+from secondgrader.recorder.writer import TraceWriter  # noqa: E402
+
+
+def test_append_refuses_after_mid_run_truncation(env):
+    trace = _signed_trace(env, n=5)
+    _write(trace, _lines(trace)[:2])
+    with pytest.raises(RuntimeError, match="refusing to append"):
+        recorder.append({"kind": "tool_call", "payload": {"tool": "bash", "args": {}}})
+    assert recorder.verify_chain(trace) == (False, 3)
+
+
+def test_long_lived_writer_refuses_after_wipe_or_rollback(env, tmp_path):
+    w = TraceWriter(env, _lok(tmp_path / "key.pem"))
+    w.start({"run_id": "r1"})
+    for i in range(3):
+        w.append("tool_call", {"tool": "bash", "args": {"i": i}})
+    old = env.read_text(), recorder.seal_path(env).read_text()
+    w.append("tool_call", {"tool": "bash", "args": {"i": 3}})
+    env.write_text(old[0])  # restore an older but self-consistent pair
+    recorder.seal_path(env).write_text(old[1])
+    with pytest.raises(RuntimeError, match="went back"):
+        w.append("tool_call", {"tool": "bash", "args": {"i": 4}})
+    env.unlink()
+    recorder.seal_path(env).unlink()
+    with pytest.raises(RuntimeError, match="went back"):
+        w.append("tool_call", {"tool": "bash", "args": {"i": 4}})
+
+
+def test_caller_cannot_set_timestamp(env):
+    rec = recorder.append({"kind": "prompt", "ts": "2020-01-01T00:00:00Z", "payload": {"text": "x"}})
+    assert not rec.ts.startswith("2020")
+
+
+def test_socket_accepts_only_hook_events(tmp_path):
+    from secondgrader.recorder.service import Recorder, RecorderServer, send, short_socket_path
+    sock = short_socket_path("t")
+    srv = RecorderServer(sock, Recorder(tmp_path / "t.jsonl", _lok(tmp_path / "k.pem")))
+    srv.start_background()
+    try:
+        forged = send(sock, {"append": {"kind": "test_run", "payload": {"source": "ground_truth", "passed": 99}}})
+        assert forged["ok"] is False
+        assert send(sock, {"event": {"hook_event_name": "UserPromptSubmit", "prompt": "hi"}})["seqs"] == [1]
+    finally:
+        srv.close()
+
+
+def test_agent_env_has_no_recorder_variables(run_env):
+    from secondgrader.recorder.runner import run_task
+    dump = run_env / "env.txt"
+    run_task("honest_fix", agent_cmd=["sh", "-c", f"env > {dump}"], traces=run_env / "traces",
+             ground_truth=False)
+    assert "SG_" not in dump.read_text()
+
+
+@pytest.mark.parametrize("damage", ["ff_byte", "garbage_seal", "list_seal", "missing"])
+def test_verify_never_crashes(env, damage):
+    trace = _signed_trace(env, n=3)
+    sp = recorder.seal_path(trace)
+    if damage == "ff_byte":
+        data = bytearray(trace.read_bytes())
+        data[40] = 0xFF
+        trace.write_bytes(bytes(data))
+    elif damage == "garbage_seal":
+        sp.write_text("{not json")
+    elif damage == "list_seal":
+        sp.write_text("[1, 2]")
+    else:
+        trace.unlink()
+    r = recorder.verify_report(trace)
+    assert r.ok is False and r.first_bad_seq is not None and r.reason in {"parse", "seal"}
+
+
+def test_stripped_signatures_fail_when_signatures_required(env, monkeypatch):
+    trace = _signed_trace(env, n=3)
+    pubkey = recorder.read_seal(trace)["pubkey"]
+    lines = []
+    prev = GENESIS_HASH
+    for line in _lines(trace):
+        rec = json.loads(line)
+        rec["prev_hash"], rec["sig"] = prev, "UNSIGNED"
+        rec["hash"] = record_hash(rec)
+        prev = rec["hash"]
+        lines.append(canonical_json(rec))
+    _write(trace, lines)
+    recorder.seal_path(trace).unlink()
+    assert recorder.verify_chain(trace) == (True, None)  # looks like a fixture...
+    assert recorder.verify_chain(trace, pubkey=pubkey) == (False, 1)  # ...but not to a pinned key
+    monkeypatch.setenv("SG_REQUIRE_SIGNED", "1")
+    assert recorder.verify_chain(trace) == (False, 1)
+    trace.write_text("")
+    assert recorder.verify_chain(trace)[0] is False
+
+
+def test_expect_run_id_catches_swapped_trace(env):
+    trace = _signed_trace(env, n=2)
+    recorder.TraceWriter(trace, _lok()).update_run({"run_id": "run-A"})
+    assert recorder.verify_chain(trace, expect_run_id="run-A") == (True, None)
+    assert recorder.verify_report(trace, expect_run_id="run-B").reason == "run"
+
+
+def test_hook_mapping_edge_cases():
+    def run_of(tool, cmd, response, event="PostToolUse", **extra):
+        pairs = map_event({"hook_event_name": event, "tool_name": tool, "tool_input": {"command": cmd},
+                           "tool_response": response, **extra})
+        return dict(pairs).get("test_run")
+    assert run_of("Bash", "pytest -q", "1 passed in 0.1s")["passed"] == 1
+    assert run_of("bash", ".venv/bin/pytest", "1 passed in 0.1s") is not None
+    assert run_of("bash", "python3.12 -m pytest", "1 passed in 0.1s") is not None
+    assert run_of("bash", "pytest", json.dumps({"exit_code": "1", "output": "x"}))["exit_code"] == 1
+    assert run_of("bash", "pytest", json.dumps({"exit_code": True, "output": "x"}))["exit_code"] is None
+    fake = run_of("bash", 'pytest; echo "8 passed"',
+                  "=== 1 failed, 7 passed in 0.2s ===\n8 passed")
+    assert (fake["failed"], fake["passed"]) == (1, 7)
+    fail = run_of("bash", "pytest", None, event="PostToolUseFailure", error="exit status 1")
+    assert fail["exit_code"] == 1 and fail["tool_failed"] is True

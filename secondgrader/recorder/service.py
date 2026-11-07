@@ -8,9 +8,14 @@ never read it.
 
 Protocol (one request per connection, one JSON line each way):
 
-- ``{"event": {...raw hook payload...}}``      -> ``{"ok": true, "seqs": [...]}``
-- ``{"append": {"kind": ..., "payload": ...}}`` -> same (for the auditor, verifier and gate)
-- ``{"ping": true}``                            -> ``{"ok": true}``
+- ``{"event": {...raw hook payload...}}`` -> ``{"ok": true, "seqs": [...]}``
+- ``{"ping": true}``                       -> ``{"ok": true}``
+
+There is deliberately no "append any record" request: the socket is
+reachable while the agent runs, so it only accepts hook events, and the
+recorder decides kind, tag and timestamp. The auditor, verifier and gate
+write their records with :func:`secondgrader.recorder.append` after the
+agent has stopped.
 
 Errors come back as ``{"ok": false, "error": "..."}``; the hook then exits 2.
 """
@@ -75,18 +80,10 @@ class Recorder:
                     self.tree = new_tree
             return [self.writer.append(kind, payload).seq for kind, payload in pairs]
 
-    def handle_append(self, fields: dict[str, Any]) -> list[int]:
-        with self._lock:
-            rec = self.writer.append(fields["kind"], fields.get("payload", {}), ts=fields.get("ts"),
-                                     origin=fields.get("origin"))
-            return [rec.seq]
-
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
             if "event" in request:
                 return {"ok": True, "seqs": self.handle_event(request["event"])}
-            if "append" in request:
-                return {"ok": True, "seqs": self.handle_append(request["append"])}
             if request.get("ping"):
                 return {"ok": True}
             return {"ok": False, "error": "unknown request"}

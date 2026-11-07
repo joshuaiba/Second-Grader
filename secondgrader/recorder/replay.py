@@ -17,6 +17,7 @@ too. The replay is verified before it is used; an edited replay fails.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -77,7 +78,7 @@ def replay(task_or_path: str | Path, *, traces: Path | None = None, ground_truth
                          "record it on this machine or copy that key")
 
     traces = traces or ROOT / "traces"
-    run_id = f"{meta['task_id']}-replay-{time.strftime('%Y%m%d-%H%M%S')}"
+    run_id = f"{meta['task_id']}-replay-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid() % 1000:03d}"
     run_dir = traces / run_id
     run_dir.mkdir(parents=True)
     for sub in ("base", "final"):
@@ -90,17 +91,21 @@ def replay(task_or_path: str | Path, *, traces: Path | None = None, ground_truth
     trace = run_dir / "trace.jsonl"
     shutil.copyfile(snap, trace)
     shutil.copyfile(seal_path(snap), seal_path(trace))
-    shutil.copyfile(snap, run_dir / "agent_trace.jsonl")
-    shutil.copyfile(seal_path(snap), seal_path(run_dir / "agent_trace.jsonl"))
+    replayed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    writer = TraceWriter(trace, key)
+    # The REPLAY label goes into the signed seal, not just run.json, so it can't be dropped.
+    writer.update_run({"mode": "REPLAY", "run_id": run_id, "recorded_run_id": meta["run_id"],
+                       "replayed_at": replayed_at})
+    shutil.copyfile(trace, run_dir / "agent_trace.jsonl")
+    shutil.copyfile(seal_path(trace), seal_path(run_dir / "agent_trace.jsonl"))
 
     result = RunResult(run_id=run_id, task_id=meta["task_id"], mode="REPLAY", run_dir=str(run_dir),
                        trace_path=str(trace), work_dir=str(run_dir / "work"), branch=meta["branch"],
                        base_commit=meta["base_commit"], base_tree=meta["base_tree"],
                        final_tree=meta["final_tree"], final_commit=meta["final_commit"],
                        recorded_at=meta["recorded_at"], agent_exit=meta["agent_exit"],
-                       timed_out=meta["timed_out"],
-                       replayed_at=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"))
+                       timed_out=meta["timed_out"], replayed_at=replayed_at)
     if ground_truth:
-        result.ground_truth_seqs = run_ground_truth(result, TraceWriter(trace, key))
+        result.ground_truth_seqs = run_ground_truth(result, writer)
     result.save()
     return result

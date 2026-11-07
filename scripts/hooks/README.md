@@ -66,3 +66,25 @@ project hooks load under `--trust-workspace`; and where the session log lives.
   `collect_base`, `collect_final` (with `node_ids`) or `full_final`. A `diff` with
   `"source": "ground_truth"` is the true base-to-final change, one record per file.
 - The first record is a `prompt` written by the runner (`"source": "runner"`, plus `task_id`).
+- An agent `test_run` also has `tool_failed: true` when Muse Code reported the tool as failed
+  (`PostToolUseFailure`).
+
+## Verifying a trace (for P3's gate and page)
+
+- `recorder.verify_chain(path)` returns `(ok, first_bad_seq)`. `recorder.verify_report(path)` returns
+  the full report: `reason`, `detail`, per-record `statuses` (`ok`/`bad`/`untrusted`), `signed`,
+  `sealed`, `pubkey`, `head_hash`, `count` and `run` (the signed run metadata).
+- **For real runs, pass `require_signed=True` (or set `SG_REQUIRE_SIGNED=1`) and
+  `expect_run_id=<run_id>`.** Without them, an all-`UNSIGNED` trace with no seal passes on hashes
+  alone. That is only meant for the hand-written fixtures.
+- Seal file `<trace>.seal.json` keys (stable): `version`, `pubkey`, `count`, `head_hash`,
+  `sealed_at`, `sig`, and `run` = {`run_id`, `task_id`, `mode` (`LIVE`/`REPLAY`), `recorded_at`,
+  `base_commit`, `base_tree`, `agent` (`muse-code`/`scripted`), and on replays `replayed_at` and
+  `recorded_run_id`}.
+- Replays are labelled `mode: "REPLAY"` inside the signed seal, so the label can't be removed without
+  breaking the seal.
+- Writing results into the chain: call `recorder.append({"kind": ..., "payload": ...}, trace_path)` after the
+  agent has stopped. The recorder sets the seq, the timestamp and the OBSERVED/CLAIMED tag. The socket only
+  takes hook events, so the agent can't use it to write arbitrary records.
+- Known limit (say it openly in Q&A): the agent runs as the same OS user, so it could read `keys/` or send
+  fake hook events. The real fix is a separate user or a container.

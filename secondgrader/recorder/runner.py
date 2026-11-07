@@ -187,14 +187,18 @@ def _export(work: Path, tree: str, dest: Path) -> None:
     subprocess.run(["tar", "-x", "-C", str(dest)], input=archive, check=True, timeout=30)
 
 
-def _pytest(code_dir: Path, *args: str, timeout: float = 180) -> tuple[int, str]:
+def _pytest(code_dir: Path, *args: str, timeout: float = 180) -> tuple[int | None, str]:
     """Run pytest on a fresh copy of ``code_dir`` so nothing leaks between runs."""
     with tempfile.TemporaryDirectory(prefix="sg-gt-") as tmp:
         copy = Path(tmp) / "code"
         shutil.copytree(code_dir, copy)
-        proc = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
-                              cwd=copy, capture_output=True, text=True, timeout=timeout,
-                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        try:
+            proc = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *args],
+                                  cwd=copy, capture_output=True, text=True, timeout=timeout,
+                                  env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+        except subprocess.TimeoutExpired as exc:
+            out = (exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            return None, out + f"\nground truth stopped at the {timeout:.0f}s time limit"
         return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -226,7 +230,8 @@ def run_ground_truth(result: RunResult, writer: TraceWriter) -> list[int]:
             "output_tail": out[-1500:], **gt}).seq)
     code, out = _pytest(run_dir / "final", "-q", "-rA")
     seqs.append(writer.append("test_run", {
-        "command": "pytest -q -rA", "phase": "full_final", "exit_code": code, **parse_pytest(out),
+        "command": "pytest -q -rA", "phase": "full_final", "exit_code": code, "timed_out": code is None,
+        **parse_pytest(out),
         "tree": result.final_tree, "output_tail": out[-1500:], **gt}).seq)
     return seqs
 
@@ -272,8 +277,7 @@ def run_task(task_id: str, *, time_limit: float = 600, agent_cmd: list[str] | No
     try:
         writer.append("prompt", {"task_id": task_id, "text": prompt, "source": "runner"})
         cmd = [a.replace("{prompt}", prompt) for a in agent_cmd] if agent_cmd else muse_command(prompt)
-        env = {**os.environ, "SG_RECORDER_SOCK": str(sock)}
-        env.pop("SG_SIGNING_KEY_PATH", None)  # the agent never learns where the key lives
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SG_")}  # no key path, no socket
         result.agent_exit, result.timed_out = _launch(cmd, work, run_dir, time_limit, env)
     finally:
         server.close()

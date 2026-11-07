@@ -24,7 +24,8 @@ POST_TOOL_EVENTS = {"PostToolUse", "PostToolUseFailure"}
 MESSAGE_EVENTS = {"Stop", "SubagentStop", "PostLLMCall"}
 CONTENT_LIMIT = 4000
 
-_TEST_CMD = re.compile(r"(^|[\s;&|(])(python3?\s+-m\s+)?(pytest|py\.test)(\s|$)")
+_TEST_CMD = re.compile(r"(^|[\s;&|(])(\S*/)?(python3?(\.\d+)?\s+-m\s+)?(\S*/)?(pytest|py\.test)(?=[\s;&|)]|$)")
+_SUMMARY = re.compile(r"^=+ .* in [\d.]+s.* =+$|^\d+ \w+.* in [\d.]+s")
 _COUNT = re.compile(r"(\d+) (passed|failed|errors?|skipped|deselected|xfailed|xpassed)")
 _COLLECTED = re.compile(r"collected (\d+) items?")
 
@@ -44,6 +45,16 @@ def _maybe_json(value: Any) -> Any:
     return value
 
 
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
 def shell_command(tool_input: Any) -> str | None:
     if isinstance(tool_input, dict):
         cmd = tool_input.get("command", tool_input.get("cmd"))
@@ -59,8 +70,7 @@ def tool_result(event: dict[str, Any]) -> tuple[int | None, str]:
     exit_code: int | None = None
     text = ""
     if isinstance(resp, dict):
-        raw_code = resp.get("exit_code", resp.get("exitCode", resp.get("returncode")))
-        exit_code = raw_code if isinstance(raw_code, int) else None
+        exit_code = _as_int(resp.get("exit_code", resp.get("exitCode", resp.get("returncode"))))
         parts = [resp.get(k) for k in ("output", "stdout", "stderr", "content", "result")]
         text = "\n".join(p for p in parts if isinstance(p, str))
         if not text:
@@ -72,8 +82,10 @@ def tool_result(event: dict[str, Any]) -> tuple[int | None, str]:
         if err:
             text = (text + "\n" + str(err)).strip()
         if exit_code is None and isinstance(err, dict):
-            code = err.get("exit_code")
-            exit_code = code if isinstance(code, int) else None
+            exit_code = _as_int(err.get("exit_code"))
+        if exit_code is None and isinstance(err, str):
+            m = re.search(r"exit (?:status|code) (\d+)", err)
+            exit_code = int(m.group(1)) if m else None
     return exit_code, text
 
 
@@ -84,7 +96,9 @@ def is_test_command(cmd: str | None) -> bool:
 def parse_pytest(output: str) -> dict[str, int | None]:
     """Counts from pytest's summary line. Missing counts are 0; ``collected`` may be None."""
     counts = {"passed": 0, "failed": 0, "errors": 0, "skipped": 0, "deselected": 0}
-    summary = [ln for ln in output.splitlines() if _COUNT.search(ln)]
+    lines = [ln.strip() for ln in output.splitlines()]
+    summary = [ln for ln in lines if _COUNT.search(ln) and _SUMMARY.search(ln)]
+    summary = summary or [ln for ln in lines if _COUNT.search(ln)]
     if summary:
         for n, word in _COUNT.findall(summary[-1]):
             key = "errors" if word.startswith("error") else word
@@ -132,8 +146,9 @@ def map_event(event: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         if cmd is not None:
             out["command"] = cmd
         records = [("tool_output", out)]
-        if str(tool) in SHELL_TOOLS and is_test_command(cmd):
+        if str(tool).lower() in SHELL_TOOLS and is_test_command(cmd):
             records.append(("test_run", {"command": cmd, "exit_code": exit_code, "source": "agent",
+                                         "tool_failed": failed,
                                          **parse_pytest(text), "output_tail": text[-1500:], **common}))
         return records
     if name in MESSAGE_EVENTS:

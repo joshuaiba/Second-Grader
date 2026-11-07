@@ -54,5 +54,5 @@ def verify_hex(pubkey_hex: str, message: str, sig_hex: str) -> bool:
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey_hex)).verify(
             bytes.fromhex(sig_hex), message.encode("utf-8"))
         return True
-    except (InvalidSignature, ValueError):
+    except (InvalidSignature, ValueError, TypeError, AttributeError):
         return False

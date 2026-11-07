@@ -49,13 +49,14 @@ def append(record_fields: dict[str, Any], trace_path: str | Path | None = None) 
     """Append one record to the trace and return it, fully hashed and signed.
 
     Args:
-        record_fields: ``kind`` and ``payload``, optionally ``ts``. ``origin``
-            may be given but must match the kind (the recorder sets it).
-            ``seq``, ``prev_hash``, ``hash`` and ``sig`` are filled in here.
+        record_fields: ``kind`` and ``payload``. ``origin`` may be given but
+            must match the kind (the recorder sets it). ``seq``, ``ts``,
+            ``prev_hash``, ``hash`` and ``sig`` are always filled in here; a
+            caller-supplied ``ts`` is ignored.
         trace_path: JSONL file to append to. Defaults to ``$SG_TRACE_PATH``.
     """
     return _writer(trace_path).append(record_fields["kind"], record_fields.get("payload", {}),
-                                      ts=record_fields.get("ts"), origin=record_fields.get("origin"))
+                                      origin=record_fields.get("origin"))
 
 
 def start_run(run: dict[str, Any], trace_path: str | Path | None = None) -> None:
@@ -63,7 +64,7 @@ def start_run(run: dict[str, Any], trace_path: str | Path | None = None) -> None
     _writer(trace_path).start(run)
 
 
-def verify_chain(path: str | Path) -> tuple[bool, int | None]:
+def verify_chain(path: str | Path, **kwargs: Any) -> tuple[bool, int | None]:
     """Verify hashes, linkage, **signatures** and the seal of a trace file.
 
     Returns:
@@ -72,8 +73,11 @@ def verify_chain(path: str | Path) -> tuple[bool, int | None]:
         reports the first missing seq. Traces that are entirely ``UNSIGNED``
         with no seal (hand-written fixtures) are checked on hashes only; use
         :func:`verify_report` and its ``signed`` flag to tell them apart.
+        Pass ``require_signed=True`` (or set ``$SG_REQUIRE_SIGNED=1``) for real
+        runs, and ``expect_run_id=...`` to stop a trace from another run being
+        swapped in.
     """
-    return _verify_chain(path)
+    return _verify_chain(path, **kwargs)
 
 
 __all__ = ["ChainReport", "TraceWriter", "append", "read_seal", "seal_path", "start_run",

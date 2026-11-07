@@ -69,7 +69,7 @@ class ChainReport:
         first_bad_seq: First record that can't be trusted. For truncation this
             is one past the last record in the file (the first missing one).
         reason: ``parse``, ``seq``, ``link``, ``hash``, ``signature``, ``key``,
-            ``seal`` or ``truncated``. ``None`` when ok.
+            ``run``, ``seal`` or ``truncated``. ``None`` when ok.
         detail: One human-readable sentence.
         count: Records in the file.
         head_hash: Hash of the last record in the file (or the genesis hash).
@@ -97,8 +97,26 @@ class ChainReport:
         return asdict(self)
 
 
-def verify(trace_path: str | Path, pubkey: str | None = None) -> ChainReport:
+def _load_seal(trace_path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """``(seal, None)``, ``(None, None)`` if absent, or ``(None, error)`` if unreadable."""
+    try:
+        seal = read_seal(trace_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, f"seal is unreadable: {exc}"
+    if seal is not None and not isinstance(seal, dict):
+        return None, "seal is not a JSON object"
+    return seal, None
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+def verify(trace_path: str | Path, pubkey: str | None = None, *, require_signed: bool | None = None,
+           expect_run_id: str | None = None) -> ChainReport:
     """Verify a trace file and its seal. See the module docstring for the rules.
+
+    Never raises on bad input: a missing, garbled or forged file is a failed report.
 
     Args:
         trace_path: The JSONL trace.
@@ -106,15 +124,27 @@ def verify(trace_path: str | Path, pubkey: str | None = None) -> ChainReport:
             key in the seal. Pin it when you can: an attacker who rewrote the
             whole trace and the seal with their own key is caught only by a
             pinned key.
+        require_signed: Fail unless every record is signed and the trace is
+            sealed (so stripping signatures doesn't pass). Defaults to on when a
+            key is pinned or ``$SG_REQUIRE_SIGNED`` is set. Leave it off only
+            for the hand-written UNSIGNED fixtures.
+        expect_run_id: Fail unless the seal's ``run.run_id`` matches, so a
+            valid trace from another run can't be swapped in.
     """
     path = Path(trace_path)
-    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    n = len(lines)
-    seal = read_seal(path)
     pinned = pubkey or os.environ.get("SG_PUBKEY") or None
+    if require_signed is None:
+        require_signed = bool(pinned) or _env_flag("SG_REQUIRE_SIGNED")
+    try:
+        raw_lines = [ln for ln in path.read_bytes().split(b"\n") if ln.strip()]
+    except OSError as exc:
+        return ChainReport(ok=False, first_bad_seq=1, reason="parse", detail=f"cannot read trace: {exc}")
+    n = len(raw_lines)
+    seal, seal_error = _load_seal(path)
     key = pinned or (seal or {}).get("pubkey")
-
-    report = ChainReport(ok=True, count=n, pubkey=key, run=(seal or {}).get("run", {}))
+    run = (seal or {}).get("run")
+    report = ChainReport(ok=True, count=n, pubkey=key if isinstance(key, str) else None,
+                         run=run if isinstance(run, dict) else {})
 
     def fail(seq: int, reason: str, detail: str) -> ChainReport:
         report.ok = False
@@ -126,20 +156,27 @@ def verify(trace_path: str | Path, pubkey: str | None = None) -> ChainReport:
         return report
 
     # The seal must be authentic before we trust its key, count or head hash.
+    if seal_error:
+        return fail(n + 1, "seal", seal_error)
     if seal is not None:
         if pinned and seal.get("pubkey") != pinned:
             return fail(1, "key", "seal was made with a different key than the pinned one")
         if not verify_hex(seal.get("pubkey", ""), seal_body(seal), seal.get("sig", "")):
             return fail(n + 1, "seal", "seal signature is invalid, so the end of the log can't be trusted")
         report.sealed = True
+        if expect_run_id is not None and report.run.get("run_id") != expect_run_id:
+            return fail(1, "run", f"this trace belongs to run {report.run.get('run_id')!r}, "
+                                  f"not {expect_run_id!r}")
+    elif expect_run_id is not None:
+        return fail(1, "run", "no seal, so the run id can't be checked")
 
     expected_prev = GENESIS_HASH
     expected_seq = 1
     saw_signed = saw_unsigned = False
-    for idx, line in enumerate(lines, start=1):
+    for idx, raw in enumerate(raw_lines, start=1):
         try:
-            rec = Record.from_dict(json.loads(line))
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            rec = Record.from_dict(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
             return fail(idx, "parse", f"line {idx} is not a valid record: {exc}")
         if rec.seq != expected_seq:
             return fail(expected_seq, "seq",
@@ -150,10 +187,10 @@ def verify(trace_path: str | Path, pubkey: str | None = None) -> ChainReport:
             return fail(rec.seq, "hash", f"seq {rec.seq} content does not match its hash: it was edited")
         if rec.sig == UNSIGNED:
             saw_unsigned = True
-            if saw_signed or seal is not None:
-                return fail(rec.seq, "signature", f"seq {rec.seq} is unsigned inside a signed trace")
+            if saw_signed or seal is not None or require_signed:
+                return fail(rec.seq, "signature", f"seq {rec.seq} is unsigned but signatures are required")
         else:
-            saw_signed = True
+            saw_signed = report.signed = True
             if saw_unsigned:
                 return fail(rec.seq, "signature", f"seq {rec.seq} is signed inside an unsigned trace")
             if not key:
@@ -164,16 +201,15 @@ def verify(trace_path: str | Path, pubkey: str | None = None) -> ChainReport:
         expected_seq += 1
 
     report.head_hash = expected_prev
-    report.signed = saw_signed
     report.statuses = ["ok"] * n
 
     if seal is None:
-        if saw_signed:
+        if saw_signed or require_signed:
             return fail(n + 1, "truncated", "the seal is missing, so records may have been cut from the end")
         return report
 
     count = seal.get("count")
-    if count is None or n < count:
+    if not isinstance(count, int) or n < count:
         return fail(n + 1, "truncated", f"the seal says {count} records but the file has {n}")
     if n > count:
         return fail(count + 1, "seal", f"records after seq {count} were added without the recorder")
@@ -182,7 +218,7 @@ def verify(trace_path: str | Path, pubkey: str | None = None) -> ChainReport:
     return report
 
 
-def verify_chain(trace_path: str | Path, pubkey: str | None = None) -> tuple[bool, int | None]:
-    """``(True, None)`` if intact, else ``(False, first_bad_seq)``."""
-    r = verify(trace_path, pubkey)
+def verify_chain(trace_path: str | Path, pubkey: str | None = None, **kwargs: Any) -> tuple[bool, int | None]:
+    """``(True, None)`` if intact, else ``(False, first_bad_seq)``. Same options as :func:`verify`."""
+    r = verify(trace_path, pubkey, **kwargs)
     return r.ok, r.first_bad_seq
