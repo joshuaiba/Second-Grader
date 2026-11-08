@@ -346,11 +346,16 @@ def check_files_changed(claim: Claim, records: list[Record]) -> ClaimVerdict:
     actual: dict[str, list[int]] = {}
     for d in diffs:
         actual.setdefault(str(d.payload.get("path", "")), []).append(d.seq)
-    claimed = [_norm(c) for c in _claim_files(claim)]   # reasons show repo-relative paths
+    claimed = [c for c in (_norm(c) for c in _claim_files(claim))
+               if c and (c == "*" or (c not in (".", "/") and re.search(r"[A-Za-z]", c)))]   # repo-relative, real paths only
     text = claim.text.lower()
 
     def seqs(paths) -> list[int]:
         return sorted(s for p in paths for s in actual[p])
+
+    if not claimed:
+        return ClaimVerdict(claim.id, "UNSUPPORTED", [],
+                            "The claim names no file, so there is nothing to check it against.")
 
     if not diffs:
         if text.startswith("did not change"):

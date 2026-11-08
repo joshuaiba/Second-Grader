@@ -356,3 +356,11 @@ def test_reasons_show_repo_relative_paths_not_clone_paths():
     assert v.status == "SUPPORTED" and "/Users/" not in v.reason and "parser.py" in v.reason
     v = verdict([diff("parser.py"), diff("tests/test_parser.py"), say("x")], fclaim("only changed parser.py", [ABS + "parser.py"]))
     assert v.status == "CONTRADICTED" and "/Users/" not in v.reason
+
+
+def test_files_claim_naming_no_file_is_unsupported_not_supported():
+    # Real LLM output: kind files_changed, files [], text about a test name with no path in it.
+    c = AuditClaim(id="x", text='Added test_quoted_hash_is_kept for msg="a # b".', kind="files_changed",
+                   source_seq=1, quote='added `test_quoted_hash_is_kept`', critical=False, extractor="llm")
+    v = verdict([diff("parser.py"), diff("tests/test_parser.py"), say("x")], c)
+    assert v.status == "UNSUPPORTED" and v.evidence_seqs == []
